@@ -3,33 +3,28 @@ main = "src/index.ts"
 compatibility_date = "2025-02-14"
 compatibility_flags = ["nodejs_compat"]
 
-# Development R2 bucket binding (local Miniflare / dev bucket)
-[[r2_buckets]]
-binding = "FILES_BUCKET"
-bucket_name = "zero-base-files-dev"
-preview_bucket_name = "zero-base-files-dev"
-
+# Production configuration (zero-base-api.suszero9.workers.dev)
 [vars]
-ENVIRONMENT = "development"
-BUSINESS_TIMEZONE = "Asia/Kolkata"
-MAX_UPLOAD_BYTES = "15728640"
-
-# Production environment configuration
-[env.production]
-name = "zero-base-api-prod"
-
-[[env.production.r2_buckets]]
-binding = "FILES_BUCKET"
-bucket_name = "zero-base-files"
-
-[env.production.vars]
 ENVIRONMENT = "production"
+SUPABASE_URL = "https://fskcdtpdkjgjaksqwjaf.supabase.co"
+STORAGE_BUCKET = "zero-base-files"
 BUSINESS_TIMEZONE = "Asia/Kolkata"
 MAX_UPLOAD_BYTES = "15728640"
+ALLOWED_ORIGINS = "https://zero-base.pages.dev"
+
+# Local development environment (`wrangler dev --env development`)
+[env.development]
+name = "zero-base-api-dev"
+
+[env.development.vars]
+ENVIRONMENT = "development"
+SUPABASE_URL = "https://fskcdtpdkjgjaksqwjaf.supabase.co"
+STORAGE_BUCKET = "zero-base-files"
+BUSINESS_TIMEZONE = "Asia/Kolkata"
+MAX_UPLOAD_BYTES = "15728640"
+ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
 
 # Secrets required via `wrangler secret put <NAME>`:
-# - SUPABASE_URL
-# - SUPABASE_ANON_KEY
-# - SUPABASE_JWT_SECRET (optional if using JWKS)
-# - FILE_SIGNING_SECRET
-# - ALLOWED_ORIGINS
+# - SUPABASE_ANON_KEY       (Supabase publishable / anon key)
+# - OWNER_USER_IDS          (Comma-separated 3 Supabase Auth UUIDs of the owner)
+# - SUPABASE_JWT_SECRET     (Optional if using JWKS asymmetric JWT verification)

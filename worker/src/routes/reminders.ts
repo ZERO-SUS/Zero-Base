@@ -8,8 +8,17 @@ export const reminderRoutes = new Hono<AppBindings>();
 const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
 
+const createReminderSchema = z.object({
+  customer_id: z.string().regex(uuidRegex, 'Valid customer_id is required'),
+  service_id: z.string().regex(uuidRegex).optional().nullable(),
+  due_date: z.string().regex(dateRegex, 'due_date must be YYYY-MM-DD'),
+  reminder_type: z.enum(['service_due', 'custom', 'follow_up']).default('custom'),
+  notes: z.string().trim().max(1500).optional().nullable(),
+});
+
 const updateReminderSchema = z.object({
   due_date: z.string().regex(dateRegex).optional(),
+  reminder_type: z.enum(['service_due', 'custom', 'follow_up']).optional(),
   status: z
     .enum(['active', 'contacted', 'confirmed', 'snoozed', 'dismissed', 'completed'])
     .optional(),
@@ -20,6 +29,7 @@ const updateReminderSchema = z.object({
 reminderRoutes.get('/reminders', async (c) => {
   const supabase = c.get('supabase');
   const categoryFilter = c.req.query('category');
+  const includeCompleted = c.req.query('include_completed') === 'true';
   const todayIst = getIstToday();
 
   const { data, error } = await supabase
@@ -28,18 +38,19 @@ reminderRoutes.get('/reminders', async (c) => {
       `
       *,
       customers!inner (
-        customer_id,
+        id,
+        customer_code,
         full_name,
-        primary_phone,
-        secondary_phone,
+        phone_number,
+        alternate_phone,
         address,
-        locality
+        area
       ),
-      services!inner (
-        service_id,
+      services (
+        id,
         service_date,
         service_type,
-        tank_capacity,
+        tank_details,
         total_amount
       )
     `
@@ -58,7 +69,9 @@ reminderRoutes.get('/reminders', async (c) => {
 
   const filtered = categoryFilter
     ? enriched.filter((r) => r.category.toLowerCase() === categoryFilter.toLowerCase())
-    : enriched.filter((r) => r.status !== 'completed');
+    : includeCompleted
+      ? enriched
+      : enriched.filter((r) => r.status !== 'completed');
 
   const counts = {
     Overdue: enriched.filter((r) => r.category === 'Overdue').length,
@@ -67,6 +80,7 @@ reminderRoutes.get('/reminders', async (c) => {
     Contacted: enriched.filter((r) => r.category === 'Contacted').length,
     Confirmed: enriched.filter((r) => r.category === 'Confirmed').length,
     Snoozed: enriched.filter((r) => r.category === 'Snoozed').length,
+    Completed: enriched.filter((r) => r.category === 'Completed').length,
     Dismissed: enriched.filter((r) => r.category === 'Dismissed').length,
   };
 
@@ -75,6 +89,72 @@ reminderRoutes.get('/reminders', async (c) => {
     counts,
     reminders: filtered,
   });
+});
+
+reminderRoutes.post('/reminders', async (c) => {
+  const supabase = c.get('supabase');
+  const user = c.get('authUser');
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'Invalid JSON request body' }, 400);
+  }
+
+  const parsed = createReminderSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: 'Validation failed', details: parsed.error.flatten() }, 400);
+  }
+
+  const payload = parsed.data;
+
+  // Prevent duplicate active reminders for the same service + due date
+  if (payload.service_id) {
+    const { data: dup } = await supabase
+      .from('reminders')
+      .select('id')
+      .eq('service_id', payload.service_id)
+      .is('archived_at', null)
+      .in('status', ['active', 'contacted', 'confirmed', 'snoozed'])
+      .maybeSingle();
+
+    if (dup) {
+      return c.json(
+        { error: 'An active reminder already exists for this service record.' },
+        409
+      );
+    }
+  }
+
+  const { data, error } = await supabase
+    .from('reminders')
+    .insert({
+      customer_id: payload.customer_id,
+      service_id: payload.service_id ?? null,
+      due_date: payload.due_date,
+      reminder_type: payload.reminder_type,
+      status: 'active',
+      notes: payload.notes || null,
+      created_by: user.id,
+      updated_by: user.id,
+    })
+    .select('*')
+    .single();
+
+  if (error || !data) {
+    return c.json({ error: 'Failed to create reminder' }, 500);
+  }
+
+  return c.json(
+    {
+      reminder: {
+        ...data,
+        category: computeReminderCategory(data),
+      },
+    },
+    201
+  );
 });
 
 reminderRoutes.patch('/reminders/:id', async (c) => {
@@ -102,12 +182,10 @@ reminderRoutes.patch('/reminders/:id', async (c) => {
     updated_by: user.id,
   };
 
-  if (parsed.data.due_date !== undefined) {
-    updates.due_date = parsed.data.due_date;
-  }
-  if (parsed.data.notes !== undefined) {
-    updates.notes = parsed.data.notes;
-  }
+  if (parsed.data.due_date !== undefined) updates.due_date = parsed.data.due_date;
+  if (parsed.data.reminder_type !== undefined) updates.reminder_type = parsed.data.reminder_type;
+  if (parsed.data.notes !== undefined) updates.notes = parsed.data.notes;
+
   if (parsed.data.status !== undefined) {
     updates.status = parsed.data.status;
     if (parsed.data.status === 'contacted') {
@@ -128,7 +206,7 @@ reminderRoutes.patch('/reminders/:id', async (c) => {
   const { data, error } = await supabase
     .from('reminders')
     .update(updates)
-    .eq('reminder_id', reminderId)
+    .eq('id', reminderId)
     .select('*')
     .single();
 
@@ -136,12 +214,11 @@ reminderRoutes.patch('/reminders/:id', async (c) => {
     return c.json({ error: 'Failed to update reminder' }, 500);
   }
 
-  // Keep linked service's next_due_date in sync if due_date changed
-  if (parsed.data.due_date) {
+  if (parsed.data.due_date && data.service_id) {
     await supabase
       .from('services')
       .update({ next_due_date: parsed.data.due_date, updated_by: user.id })
-      .eq('service_id', data.service_id);
+      .eq('id', data.service_id);
   }
 
   return c.json({

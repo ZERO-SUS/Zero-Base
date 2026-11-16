@@ -16,6 +16,16 @@ function getJwks(supabaseUrl: string) {
   return jwks;
 }
 
+export function parseOwnerAllowlist(raw: string | undefined): Set<string> {
+  if (!raw) return new Set();
+  return new Set(
+    raw
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter((s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s))
+  );
+}
+
 export async function verifySupabaseJwt(
   token: string,
   env: Env
@@ -37,7 +47,7 @@ export async function verifySupabaseJwt(
         email: typeof payload.email === 'string' ? payload.email : undefined,
       };
     } catch {
-      // Fall through to JWKS verification (for asymmetric ES256/RS256 Supabase keys)
+      // Fall through to JWKS verification (ES256/RS256 Supabase keys)
     }
   }
 
@@ -78,33 +88,60 @@ export function createAuthMiddleware(
       return c.json({ error: 'Invalid or expired authentication token' }, 401);
     }
 
+    // 1. Optional Worker-level owner allowlist check (OWNER_USER_IDS secret)
+    const configuredOwners = parseOwnerAllowlist(c.env.OWNER_USER_IDS);
+    if (configuredOwners.size > 0 && !configuredOwners.has(claims.sub.toLowerCase())) {
+      return c.json({ error: 'Access denied: account is not an authorized owner.' }, 403);
+    }
+
     const supabaseFactory = overrides?.createSupabase ?? createUserSupabaseClient;
     const supabase = supabaseFactory(c.env, token);
 
-    const { data: profile, error } = await supabase
+    // 2. Database-level owner_allowlist verification (enforced via PostgreSQL RLS)
+    const { data: allowRow, error: allowErr } = await supabase
+      .from('owner_allowlist')
+      .select('user_id, is_active')
+      .eq('user_id', claims.sub)
+      .eq('is_active', true)
+      .maybeSingle();
+
+    if (allowErr || !allowRow) {
+      return c.json(
+        { error: 'Access denied: account is not authorized in owner allowlist.' },
+        403
+      );
+    }
+
+    // 3. Load or initialize owner profile
+    let { data: profile, error: profErr } = await supabase
       .from('profiles')
-      .select('id, email, full_name, role, is_active, theme_mode, accent_color')
+      .select('id, email, full_name, role, theme_mode, accent_color')
       .eq('id', claims.sub)
-      .single();
+      .maybeSingle();
 
-    if (error || !profile) {
-      return c.json({ error: 'User profile not found or access denied' }, 403);
+    if (!profile && !profErr && claims.email) {
+      const { data: created } = await supabase
+        .from('profiles')
+        .insert({
+          id: claims.sub,
+          email: claims.email,
+          full_name: 'Owner Administrator',
+          role: 'admin',
+        })
+        .select('id, email, full_name, role, theme_mode, accent_color')
+        .single();
+      profile = created;
     }
 
-    if (!profile.is_active) {
-      return c.json({ error: 'Account is deactivated. Contact the primary administrator.' }, 403);
-    }
-
-    if (profile.role !== 'admin' && profile.role !== 'staff') {
-      return c.json({ error: 'Insufficient authorization role' }, 403);
+    if (profErr || !profile) {
+      return c.json({ error: 'Owner profile unavailable or access denied' }, 403);
     }
 
     const authUser: AuthUser = {
       id: profile.id,
       email: profile.email,
       fullName: profile.full_name,
-      role: profile.role,
-      isActive: profile.is_active,
+      role: 'admin',
       themeMode: profile.theme_mode,
       accentColor: profile.accent_color,
       jwt: token,
@@ -120,7 +157,7 @@ export function createAuthMiddleware(
 export const requireAdmin: MiddlewareHandler<AppBindings> = async (c, next) => {
   const user = c.get('authUser');
   if (!user || user.role !== 'admin') {
-    return c.json({ error: 'Administrator privileges required' }, 403);
+    return c.json({ error: 'Owner administrator privileges required' }, 403);
   }
   await next();
 };

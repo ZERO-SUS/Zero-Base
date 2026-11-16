@@ -8,23 +8,22 @@ const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 
 const createCustomerSchema = z.object({
   full_name: z.string().trim().min(1, 'Full name is required').max(150),
-  // Keep phone strings verbatim (preserve leading zeros and + country codes)
-  primary_phone: z.string().trim().min(5, 'Primary phone is required').max(30),
-  secondary_phone: z.string().trim().max(30).optional().nullable(),
+  customer_code: z.string().trim().min(2).max(40).optional(),
+  phone_number: z.string().trim().min(5, 'Phone number is required').max(30),
+  alternate_phone: z.string().trim().max(30).optional().nullable(),
   address: z.string().trim().min(1, 'Address is required').max(400),
-  locality: z.string().trim().max(150).optional().nullable(),
-  landmark: z.string().trim().max(200).optional().nullable(),
+  area: z.string().trim().max(150).optional().nullable(),
   notes: z.string().trim().max(2000).optional().nullable(),
   allow_duplicate: z.boolean().optional().default(false),
 });
 
 const updateCustomerSchema = z.object({
   full_name: z.string().trim().min(1).max(150).optional(),
-  primary_phone: z.string().trim().min(5).max(30).optional(),
-  secondary_phone: z.string().trim().max(30).optional().nullable(),
+  customer_code: z.string().trim().min(2).max(40).optional(),
+  phone_number: z.string().trim().min(5).max(30).optional(),
+  alternate_phone: z.string().trim().max(30).optional().nullable(),
   address: z.string().trim().min(1).max(400).optional(),
-  locality: z.string().trim().max(150).optional().nullable(),
-  landmark: z.string().trim().max(200).optional().nullable(),
+  area: z.string().trim().max(150).optional().nullable(),
   notes: z.string().trim().max(2000).optional().nullable(),
 });
 
@@ -47,10 +46,10 @@ customerRoutes.get('/customers', async (c) => {
   if (q.length > 0) {
     const escaped = q.replace(/[%_,()]/g, '');
     if (uuidRegex.test(q)) {
-      query = query.eq('customer_id', q);
+      query = query.eq('id', q);
     } else if (escaped.length > 0) {
       query = query.or(
-        `full_name.ilike.%${escaped}%,primary_phone.ilike.%${escaped}%,secondary_phone.ilike.%${escaped}%,address.ilike.%${escaped}%,locality.ilike.%${escaped}%`
+        `full_name.ilike.%${escaped}%,phone_number.ilike.%${escaped}%,alternate_phone.ilike.%${escaped}%,customer_code.ilike.%${escaped}%,address.ilike.%${escaped}%,area.ilike.%${escaped}%`
       );
     }
   }
@@ -100,13 +99,13 @@ customerRoutes.post('/customers', async (c) => {
 
   const payload = parsed.data;
 
-  // Check duplicates on primary_phone (and secondary_phone if supplied)
+  // Duplicate phone warning check
   const dupChecks = [
-    supabase.rpc('find_duplicate_customers', { p_phone: payload.primary_phone }),
+    supabase.rpc('find_duplicate_customers', { p_phone: payload.phone_number }),
   ];
-  if (payload.secondary_phone && payload.secondary_phone.trim().length >= 5) {
+  if (payload.alternate_phone && payload.alternate_phone.trim().length >= 5) {
     dupChecks.push(
-      supabase.rpc('find_duplicate_customers', { p_phone: payload.secondary_phone })
+      supabase.rpc('find_duplicate_customers', { p_phone: payload.alternate_phone })
     );
   }
 
@@ -115,7 +114,7 @@ customerRoutes.post('/customers', async (c) => {
   for (const res of dupResults) {
     if (res.data) {
       for (const row of res.data as Array<Record<string, unknown>>) {
-        duplicatesMap.set(String(row.customer_id), row);
+        duplicatesMap.set(String(row.id), row);
       }
     }
   }
@@ -131,19 +130,23 @@ customerRoutes.post('/customers', async (c) => {
     );
   }
 
+  const insertData: Record<string, unknown> = {
+    full_name: payload.full_name,
+    phone_number: payload.phone_number,
+    alternate_phone: payload.alternate_phone || null,
+    address: payload.address,
+    area: payload.area || null,
+    notes: payload.notes || null,
+    created_by: user.id,
+    updated_by: user.id,
+  };
+  if (payload.customer_code) {
+    insertData.customer_code = payload.customer_code;
+  }
+
   const { data, error } = await supabase
     .from('customers')
-    .insert({
-      full_name: payload.full_name,
-      primary_phone: payload.primary_phone,
-      secondary_phone: payload.secondary_phone || null,
-      address: payload.address,
-      locality: payload.locality || null,
-      landmark: payload.landmark || null,
-      notes: payload.notes || null,
-      created_by: user.id,
-      updated_by: user.id,
-    })
+    .insert(insertData)
     .select('*')
     .single();
 
@@ -162,8 +165,8 @@ customerRoutes.get('/customers/:id', async (c) => {
     return c.json({ error: 'Invalid customer ID format' }, 400);
   }
 
-  const [customerRes, servicesRes, remindersRes] = await Promise.all([
-    supabase.from('customers').select('*').eq('customer_id', customerId).single(),
+  const [customerRes, servicesRes, paymentsRes, remindersRes, filesRes] = await Promise.all([
+    supabase.from('customers').select('*').eq('id', customerId).single(),
     supabase
       .from('services')
       .select('*')
@@ -172,12 +175,25 @@ customerRoutes.get('/customers/:id', async (c) => {
       .order('service_date', { ascending: false })
       .order('created_at', { ascending: false }),
     supabase
+      .from('payments')
+      .select('*')
+      .eq('customer_id', customerId)
+      .is('archived_at', null)
+      .order('payment_date', { ascending: false })
+      .order('created_at', { ascending: false }),
+    supabase
       .from('reminders')
       .select('*')
       .eq('customer_id', customerId)
       .is('archived_at', null)
       .in('status', ['active', 'contacted', 'confirmed', 'snoozed'])
       .order('due_date', { ascending: true }),
+    supabase
+      .from('service_files')
+      .select('*')
+      .eq('customer_id', customerId)
+      .is('archived_at', null)
+      .order('uploaded_at', { ascending: false }),
   ]);
 
   if (customerRes.error || !customerRes.data) {
@@ -206,8 +222,33 @@ customerRoutes.get('/customers/:id', async (c) => {
       next_scheduled_service: nextScheduledService,
     },
     services,
+    payments: paymentsRes.data ?? [],
     reminders: remindersRes.data ?? [],
+    files: filesRes.data ?? [],
   });
+});
+
+customerRoutes.get('/customers/:id/services', async (c) => {
+  const supabase = c.get('supabase');
+  const customerId = c.req.param('id');
+
+  if (!uuidRegex.test(customerId)) {
+    return c.json({ error: 'Invalid customer ID format' }, 400);
+  }
+
+  const { data, error } = await supabase
+    .from('services')
+    .select('*')
+    .eq('customer_id', customerId)
+    .is('archived_at', null)
+    .order('service_date', { ascending: false })
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    return c.json({ error: 'Failed to load customer services' }, 500);
+  }
+
+  return c.json({ services: data ?? [] });
 });
 
 customerRoutes.patch('/customers/:id', async (c) => {
@@ -231,15 +272,13 @@ customerRoutes.patch('/customers/:id', async (c) => {
     return c.json({ error: 'Validation failed', details: parsed.error.flatten() }, 400);
   }
 
-  const updates: Record<string, unknown> = {
-    ...parsed.data,
-    updated_by: user.id,
-  };
-
   const { data, error } = await supabase
     .from('customers')
-    .update(updates)
-    .eq('customer_id', customerId)
+    .update({
+      ...parsed.data,
+      updated_by: user.id,
+    })
+    .eq('id', customerId)
     .select('*')
     .single();
 
@@ -250,48 +289,55 @@ customerRoutes.patch('/customers/:id', async (c) => {
   return c.json({ customer: data });
 });
 
+async function archiveCustomer(
+  supabase: AppBindings['Variables']['supabase'],
+  userId: string,
+  customerId: string
+) {
+  return supabase
+    .from('customers')
+    .update({ archived_at: new Date().toISOString(), updated_by: userId })
+    .eq('id', customerId)
+    .select('*')
+    .single();
+}
+
 customerRoutes.post('/customers/:id/archive', async (c) => {
   const supabase = c.get('supabase');
   const user = c.get('authUser');
   const customerId = c.req.param('id');
+  if (!uuidRegex.test(customerId)) return c.json({ error: 'Invalid customer ID format' }, 400);
 
-  if (!uuidRegex.test(customerId)) {
-    return c.json({ error: 'Invalid customer ID format' }, 400);
-  }
-
-  const { data, error } = await supabase
-    .from('customers')
-    .update({ archived_at: new Date().toISOString(), updated_by: user.id })
-    .eq('customer_id', customerId)
-    .select('*')
-    .single();
-
-  if (error || !data) {
-    return c.json({ error: 'Failed to archive customer' }, 500);
-  }
-
+  const { data, error } = await archiveCustomer(supabase, user.id, customerId);
+  if (error || !data) return c.json({ error: 'Failed to archive customer' }, 500);
   return c.json({ customer: data });
+});
+
+// Soft-archive DELETE endpoint (never silently erases permanent customer records)
+customerRoutes.delete('/customers/:id', async (c) => {
+  const supabase = c.get('supabase');
+  const user = c.get('authUser');
+  const customerId = c.req.param('id');
+  if (!uuidRegex.test(customerId)) return c.json({ error: 'Invalid customer ID format' }, 400);
+
+  const { data, error } = await archiveCustomer(supabase, user.id, customerId);
+  if (error || !data) return c.json({ error: 'Failed to archive customer' }, 500);
+  return c.json({ customer: data, archived: true });
 });
 
 customerRoutes.post('/customers/:id/restore', async (c) => {
   const supabase = c.get('supabase');
   const user = c.get('authUser');
   const customerId = c.req.param('id');
-
-  if (!uuidRegex.test(customerId)) {
-    return c.json({ error: 'Invalid customer ID format' }, 400);
-  }
+  if (!uuidRegex.test(customerId)) return c.json({ error: 'Invalid customer ID format' }, 400);
 
   const { data, error } = await supabase
     .from('customers')
     .update({ archived_at: null, updated_by: user.id })
-    .eq('customer_id', customerId)
+    .eq('id', customerId)
     .select('*')
     .single();
 
-  if (error || !data) {
-    return c.json({ error: 'Failed to restore customer' }, 500);
-  }
-
+  if (error || !data) return c.json({ error: 'Failed to restore customer' }, 500);
   return c.json({ customer: data });
 });

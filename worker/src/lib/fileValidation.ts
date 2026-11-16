@@ -1,4 +1,4 @@
-export const ALLOWED_ATTACHMENT_CATEGORIES = [
+export const ALLOWED_FILE_CATEGORIES = [
   'Bill photos',
   'UPI transaction screenshots',
   'Before-cleaning photos',
@@ -78,15 +78,15 @@ export function detectMimeFromMagicBytes(bytes: Uint8Array): string | null {
 export function sanitizeFilename(filename: string): string {
   const base = filename.split(/[/\\]/).pop() ?? 'file';
   const cleaned = base.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/_{2,}/g, '_');
-  return cleaned.slice(0, 120) || 'attachment';
+  return cleaned.slice(0, 120) || 'service_file';
 }
 
-export function buildStorageKey(params: {
+export function buildStoragePath(params: {
   customerId: string;
   serviceId: string;
-  attachmentId: string;
+  fileId: string;
   filename: string;
 }): string {
   const safe = sanitizeFilename(params.filename);
-  return `customers/${params.customerId}/services/${params.serviceId}/${params.attachmentId}-${safe}`;
+  return `customers/${params.customerId}/services/${params.serviceId}/${params.fileId}-${safe}`;
 }

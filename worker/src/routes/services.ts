@@ -13,7 +13,8 @@ const createServiceSchema = z
     customer_id: z.string().regex(uuidRegex, 'Valid customer_id is required'),
     service_date: z.string().regex(dateRegex, 'service_date must be YYYY-MM-DD'),
     service_type: z.string().trim().min(1, 'Service type is required').max(120),
-    tank_capacity: z.string().trim().max(80).optional().nullable(),
+    tank_details: z.string().trim().max(150).optional().nullable(),
+    description: z.string().trim().max(1000).optional().nullable(),
     price: z.number().nonnegative('Price cannot be negative').max(10_000_000),
     discount: z.number().nonnegative('Discount cannot be negative').max(10_000_000).default(0),
     next_due_date: z
@@ -27,7 +28,7 @@ const createServiceSchema = z
       .object({
         amount: z.number().positive(),
         payment_method: z.enum(['Cash', 'UPI', 'Other']),
-        transaction_reference: z.string().trim().max(150).optional().nullable(),
+        reference_number: z.string().trim().max(150).optional().nullable(),
         payment_date: z.string().regex(dateRegex),
         notes: z.string().trim().max(1000).optional().nullable(),
       })
@@ -42,7 +43,8 @@ const createServiceSchema = z
 const updateServiceSchema = z.object({
   service_date: z.string().regex(dateRegex, 'service_date must be YYYY-MM-DD').optional(),
   service_type: z.string().trim().min(1).max(120).optional(),
-  tank_capacity: z.string().trim().max(80).optional().nullable(),
+  tank_details: z.string().trim().max(150).optional().nullable(),
+  description: z.string().trim().max(1000).optional().nullable(),
   price: z.number().nonnegative().max(10_000_000).optional(),
   discount: z.number().nonnegative().max(10_000_000).optional(),
   next_due_date: z.string().regex(dateRegex).optional().nullable(),
@@ -64,16 +66,17 @@ serviceRoutes.get('/services/history', async (c) => {
       `
       *,
       customers!inner (
-        customer_id,
+        id,
+        customer_code,
         full_name,
-        primary_phone,
-        secondary_phone,
+        phone_number,
+        alternate_phone,
         address,
-        locality
+        area
       )
     `
     )
-    // CRITICAL DATE RULE: always sort and group by service_date, never created_at
+    // CRITICAL DATE RULE: always sort and group by actual service_date, never created_at
     .order('service_date', { ascending: false })
     .order('created_at', { ascending: false });
 
@@ -105,37 +108,38 @@ serviceRoutes.get('/services/history', async (c) => {
     return c.json({ error: 'Failed to load service history' }, 500);
   }
 
-  let services = (data ?? []) as Array<Record<string, unknown> & {
-    service_date: string;
-    customers: {
-      customer_id: string;
-      full_name: string;
-      primary_phone: string;
-      secondary_phone?: string | null;
-      address: string;
-      locality?: string | null;
-    };
-  }>;
+  let services = (data ?? []) as Array<
+    Record<string, unknown> & {
+      service_date: string;
+      customers: {
+        id: string;
+        customer_code: string;
+        full_name: string;
+        phone_number: string;
+        alternate_phone?: string | null;
+        address: string;
+        area?: string | null;
+      };
+    }
+  >;
 
   if (q.length > 0) {
     services = services.filter((s) => {
       const cust = s.customers;
       return (
         cust.full_name.toLowerCase().includes(q) ||
-        cust.primary_phone.toLowerCase().includes(q) ||
-        (cust.secondary_phone ?? '').toLowerCase().includes(q) ||
+        cust.phone_number.toLowerCase().includes(q) ||
+        (cust.alternate_phone ?? '').toLowerCase().includes(q) ||
+        cust.customer_code.toLowerCase().includes(q) ||
         cust.address.toLowerCase().includes(q) ||
-        (cust.locality ?? '').toLowerCase().includes(q) ||
-        cust.customer_id.toLowerCase() === q
+        (cust.area ?? '').toLowerCase().includes(q) ||
+        cust.id.toLowerCase() === q
       );
     });
   }
 
   // Group strictly by service_date year & month (newest first)
-  const yearsMap = new Map<
-    number,
-    Map<number, typeof services>
-  >();
+  const yearsMap = new Map<number, Map<number, typeof services>>();
 
   for (const srv of services) {
     const { year, month } = extractYearMonthFromDate(srv.service_date);
@@ -176,24 +180,24 @@ serviceRoutes.get('/services/:id', async (c) => {
     return c.json({ error: 'Invalid service ID format' }, 400);
   }
 
-  const [serviceRes, paymentsRes, attachmentsRes, remindersRes] = await Promise.all([
+  const [serviceRes, paymentsRes, filesRes, remindersRes] = await Promise.all([
     supabase
       .from('services')
       .select(
         `
         *,
         customers (
-          customer_id,
+          id,
+          customer_code,
           full_name,
-          primary_phone,
-          secondary_phone,
+          phone_number,
+          alternate_phone,
           address,
-          locality,
-          landmark
+          area
         )
       `
       )
-      .eq('service_id', serviceId)
+      .eq('id', serviceId)
       .single(),
     supabase
       .from('payments')
@@ -202,7 +206,7 @@ serviceRoutes.get('/services/:id', async (c) => {
       .order('payment_date', { ascending: false })
       .order('created_at', { ascending: false }),
     supabase
-      .from('attachments')
+      .from('service_files')
       .select('*')
       .eq('service_id', serviceId)
       .is('archived_at', null)
@@ -222,7 +226,7 @@ serviceRoutes.get('/services/:id', async (c) => {
   return c.json({
     service: serviceRes.data,
     payments: paymentsRes.data ?? [],
-    attachments: attachmentsRes.data ?? [],
+    files: filesRes.data ?? [],
     reminders: remindersRes.data ?? [],
   });
 });
@@ -245,11 +249,10 @@ serviceRoutes.post('/services', async (c) => {
 
   const payload = parsed.data;
 
-  // Verify customer exists and is not archived
   const { data: customer, error: custErr } = await supabase
     .from('customers')
-    .select('customer_id, archived_at')
-    .eq('customer_id', payload.customer_id)
+    .select('id, archived_at')
+    .eq('id', payload.customer_id)
     .single();
 
   if (custErr || !customer) {
@@ -259,7 +262,6 @@ serviceRoutes.post('/services', async (c) => {
     return c.json({ error: 'Cannot add a service to an archived customer. Restore the customer first.' }, 400);
   }
 
-  // Idempotency duplicate submission prevention
   if (payload.idempotency_key) {
     const { data: existing } = await supabase
       .from('services')
@@ -277,7 +279,8 @@ serviceRoutes.post('/services', async (c) => {
       customer_id: payload.customer_id,
       service_date: payload.service_date,
       service_type: payload.service_type,
-      tank_capacity: payload.tank_capacity || null,
+      tank_details: payload.tank_details || null,
+      description: payload.description || null,
       price: payload.price,
       discount: payload.discount,
       next_due_date: payload.next_due_date || null,
@@ -295,11 +298,12 @@ serviceRoutes.post('/services', async (c) => {
 
   if (payload.initial_payment) {
     const { error: payErr } = await supabase.from('payments').insert({
-      service_id: service.service_id,
+      service_id: service.id,
+      customer_id: payload.customer_id,
       amount: payload.initial_payment.amount,
       payment_type: 'payment',
       payment_method: payload.initial_payment.payment_method,
-      transaction_reference: payload.initial_payment.transaction_reference || null,
+      reference_number: payload.initial_payment.reference_number || null,
       payment_date: payload.initial_payment.payment_date,
       notes: payload.initial_payment.notes || null,
       idempotency_key: payload.idempotency_key
@@ -321,7 +325,7 @@ serviceRoutes.post('/services', async (c) => {
     const { data: refreshed } = await supabase
       .from('services')
       .select('*')
-      .eq('service_id', service.service_id)
+      .eq('id', service.id)
       .single();
 
     return c.json({ service: refreshed ?? service }, 201);
@@ -353,8 +357,8 @@ serviceRoutes.patch('/services/:id', async (c) => {
 
   const { data: existing, error: findErr } = await supabase
     .from('services')
-    .select('service_id, price, discount')
-    .eq('service_id', serviceId)
+    .select('id, price, discount')
+    .eq('id', serviceId)
     .single();
 
   if (findErr || !existing) {
@@ -373,7 +377,7 @@ serviceRoutes.patch('/services/:id', async (c) => {
       ...parsed.data,
       updated_by: user.id,
     })
-    .eq('service_id', serviceId)
+    .eq('id', serviceId)
     .select('*')
     .single();
 
@@ -389,22 +393,35 @@ serviceRoutes.post('/services/:id/archive', async (c) => {
   const user = c.get('authUser');
   const serviceId = c.req.param('id');
 
-  if (!uuidRegex.test(serviceId)) {
-    return c.json({ error: 'Invalid service ID format' }, 400);
-  }
+  if (!uuidRegex.test(serviceId)) return c.json({ error: 'Invalid service ID format' }, 400);
 
   const { data, error } = await supabase
     .from('services')
     .update({ archived_at: new Date().toISOString(), updated_by: user.id })
-    .eq('service_id', serviceId)
+    .eq('id', serviceId)
     .select('*')
     .single();
 
-  if (error || !data) {
-    return c.json({ error: 'Failed to archive service' }, 500);
-  }
-
+  if (error || !data) return c.json({ error: 'Failed to archive service' }, 500);
   return c.json({ service: data });
+});
+
+serviceRoutes.delete('/services/:id', async (c) => {
+  const supabase = c.get('supabase');
+  const user = c.get('authUser');
+  const serviceId = c.req.param('id');
+
+  if (!uuidRegex.test(serviceId)) return c.json({ error: 'Invalid service ID format' }, 400);
+
+  const { data, error } = await supabase
+    .from('services')
+    .update({ archived_at: new Date().toISOString(), updated_by: user.id })
+    .eq('id', serviceId)
+    .select('*')
+    .single();
+
+  if (error || !data) return c.json({ error: 'Failed to archive service' }, 500);
+  return c.json({ service: data, archived: true });
 });
 
 serviceRoutes.post('/services/:id/restore', async (c) => {
@@ -412,20 +429,15 @@ serviceRoutes.post('/services/:id/restore', async (c) => {
   const user = c.get('authUser');
   const serviceId = c.req.param('id');
 
-  if (!uuidRegex.test(serviceId)) {
-    return c.json({ error: 'Invalid service ID format' }, 400);
-  }
+  if (!uuidRegex.test(serviceId)) return c.json({ error: 'Invalid service ID format' }, 400);
 
   const { data, error } = await supabase
     .from('services')
     .update({ archived_at: null, updated_by: user.id })
-    .eq('service_id', serviceId)
+    .eq('id', serviceId)
     .select('*')
     .single();
 
-  if (error || !data) {
-    return c.json({ error: 'Failed to restore service' }, 500);
-  }
-
+  if (error || !data) return c.json({ error: 'Failed to restore service' }, 500);
   return c.json({ service: data });
 });

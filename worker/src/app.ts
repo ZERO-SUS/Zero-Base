@@ -2,10 +2,10 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { createAuthMiddleware } from './lib/auth';
 import { rateLimitMiddleware } from './lib/rateLimit';
-import { attachmentRoutes, publicSignedFileRoutes } from './routes/attachments';
 import { authRoutes } from './routes/auth';
 import { customerRoutes } from './routes/customers';
 import { dashboardRoutes } from './routes/dashboard';
+import { fileRoutes } from './routes/files';
 import { healthRoutes } from './routes/health';
 import { paymentRoutes } from './routes/payments';
 import { reminderRoutes } from './routes/reminders';
@@ -17,29 +17,44 @@ import type { AppBindings, ServiceOverrides } from './types';
 export function createApp(overrides?: ServiceOverrides): Hono<AppBindings> {
   const app = new Hono<AppBindings>();
 
-  // Security headers on every response
+  // Security headers + safe request logging (no secrets, tokens, or customer PII)
   app.use('*', async (c, next) => {
     const requestId = crypto.randomUUID();
+    const start = Date.now();
     c.set('requestId', requestId);
+
     await next();
+
+    const durationMs = Date.now() - start;
+    console.log(
+      JSON.stringify({
+        req_id: requestId,
+        method: c.req.method,
+        path: new URL(c.req.url).pathname,
+        status: c.res.status,
+        duration_ms: durationMs,
+      })
+    );
+
     c.header('X-Request-Id', requestId);
     c.header('X-Content-Type-Options', 'nosniff');
     c.header('X-Frame-Options', 'DENY');
     c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
   });
 
-  // Strict CORS origin allowlist
-  app.use('/api/*', async (c, next) => {
-    const allowedRaw = c.env.ALLOWED_ORIGINS ?? 'http://localhost:5173';
+  // Strict CORS origin allowlist (Pages URL + local dev)
+  app.use('*', async (c, next) => {
+    const allowedRaw = c.env.ALLOWED_ORIGINS ?? 'https://zero-base.pages.dev,http://localhost:5173';
     const allowedList = allowedRaw
       .split(',')
-      .map((s) => s.trim())
+      .map((s) => s.trim().replace(/\/$/, ''))
       .filter(Boolean);
 
     const corsMiddleware = cors({
       origin: (origin) => {
-        if (!origin) return allowedList[0] ?? '*';
-        return allowedList.includes(origin) ? origin : '';
+        if (!origin) return allowedList[0] ?? 'https://zero-base.pages.dev';
+        const normalized = origin.replace(/\/$/, '');
+        return allowedList.includes(normalized) ? origin : '';
       },
       allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
       allowHeaders: ['Content-Type', 'Authorization'],
@@ -50,7 +65,7 @@ export function createApp(overrides?: ServiceOverrides): Hono<AppBindings> {
     return corsMiddleware(c, next);
   });
 
-  // Global rate limit for API routes
+  // Rate limiting on API routes (in-memory sliding window per IP, zero paid deps)
   app.use(
     '/api/*',
     rateLimitMiddleware({
@@ -60,13 +75,10 @@ export function createApp(overrides?: ServiceOverrides): Hono<AppBindings> {
     })
   );
 
-  // Public health endpoint (no sensitive info)
-  app.route('/api', healthRoutes);
+  // Public health endpoints (`/health` and `/api/health`)
+  app.route('/', healthRoutes);
 
-  // Short-lived HMAC-signed private R2 file streaming route
-  app.route('/api', publicSignedFileRoutes);
-
-  // All remaining /api/* routes require verified Supabase Auth + active staff profile
+  // All /api/* routes require verified Supabase JWT + Owner Allowlist authorization
   app.use('/api/*', createAuthMiddleware(overrides));
 
   app.route('/api', authRoutes);
@@ -74,7 +86,7 @@ export function createApp(overrides?: ServiceOverrides): Hono<AppBindings> {
   app.route('/api', customerRoutes);
   app.route('/api', serviceRoutes);
   app.route('/api', paymentRoutes);
-  app.route('/api', attachmentRoutes);
+  app.route('/api', fileRoutes);
   app.route('/api', reminderRoutes);
   app.route('/api', reportRoutes);
   app.route('/api', settingsRoutes);

@@ -29,7 +29,6 @@ authRoutes.get('/me', async (c) => {
       email: user.email,
       full_name: user.fullName,
       role: user.role,
-      is_active: user.isActive,
       theme_mode: user.themeMode,
       accent_color: user.accentColor,
     },
@@ -81,7 +80,7 @@ authRoutes.patch('/me/preferences', async (c) => {
     .from('profiles')
     .update(updates)
     .eq('id', user.id)
-    .select('id, email, full_name, role, is_active, theme_mode, accent_color')
+    .select('id, email, full_name, role, theme_mode, accent_color')
     .single();
 
   if (error || !data) {

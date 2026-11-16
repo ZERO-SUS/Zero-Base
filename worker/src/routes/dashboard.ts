@@ -14,20 +14,22 @@ dashboardRoutes.get('/dashboard', async (c) => {
       .from('services')
       .select(
         `
-        service_id,
+        id,
         customer_id,
         service_date,
         service_type,
-        tank_capacity,
+        tank_details,
         total_amount,
         amount_paid,
+        balance_amount,
         payment_status,
         next_due_date,
         customers (
-          customer_id,
+          id,
+          customer_code,
           full_name,
-          primary_phone,
-          locality
+          phone_number,
+          area
         )
       `
       )
@@ -39,22 +41,24 @@ dashboardRoutes.get('/dashboard', async (c) => {
       .from('reminders')
       .select(
         `
-        reminder_id,
+        id,
         service_id,
         customer_id,
         due_date,
+        reminder_type,
         status,
         snoozed_until,
         notes,
         customers (
-          customer_id,
+          id,
+          customer_code,
           full_name,
-          primary_phone,
-          locality,
+          phone_number,
+          area,
           address
         ),
         services (
-          service_id,
+          id,
           service_type,
           service_date
         )

@@ -86,12 +86,12 @@ settingsRoutes.get('/backup/export', requireAdmin, async (c) => {
   const supabase = c.get('supabase');
   const user = c.get('authUser');
 
-  const [customers, services, payments, attachments, reminders, businessSettings] =
+  const [customers, services, payments, serviceFiles, reminders, businessSettings] =
     await Promise.all([
       supabase.from('customers').select('*'),
       supabase.from('services').select('*'),
       supabase.from('payments').select('*'),
-      supabase.from('attachments').select('*'),
+      supabase.from('service_files').select('*'),
       supabase.from('reminders').select('*'),
       supabase.from('business_settings').select('*'),
     ]);
@@ -100,7 +100,7 @@ settingsRoutes.get('/backup/export', requireAdmin, async (c) => {
     customers.error,
     services.error,
     payments.error,
-    attachments.error,
+    serviceFiles.error,
     reminders.error,
     businessSettings.error,
   ].filter(Boolean);
@@ -119,7 +119,7 @@ settingsRoutes.get('/backup/export', requireAdmin, async (c) => {
         customers: customers.data?.length ?? 0,
         services: services.data?.length ?? 0,
         payments: payments.data?.length ?? 0,
-        attachments: attachments.data?.length ?? 0,
+        service_files: serviceFiles.data?.length ?? 0,
         reminders: reminders.data?.length ?? 0,
       },
     },
@@ -133,7 +133,7 @@ settingsRoutes.get('/backup/export', requireAdmin, async (c) => {
       customers: customers.data ?? [],
       services: services.data ?? [],
       payments: payments.data ?? [],
-      attachments: attachments.data ?? [],
+      service_files: serviceFiles.data ?? [],
       reminders: reminders.data ?? [],
     },
   });

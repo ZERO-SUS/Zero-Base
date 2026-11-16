@@ -79,20 +79,22 @@ reportRoutes.get('/reports', async (c) => {
       .from('services')
       .select(
         `
-        service_id,
+        id,
         service_date,
         service_type,
-        tank_capacity,
+        tank_details,
         price,
         discount,
         total_amount,
         amount_paid,
+        balance_amount,
         payment_status,
         customers!inner (
-          customer_id,
+          id,
+          customer_code,
           full_name,
-          primary_phone,
-          locality
+          phone_number,
+          area
         )
       `
       )
@@ -134,20 +136,22 @@ reportRoutes.get('/reports/export.csv', async (c) => {
     .from('services')
     .select(
       `
-      service_id,
+      id,
       service_date,
       service_type,
-      tank_capacity,
+      tank_details,
       price,
       discount,
       total_amount,
       amount_paid,
+      balance_amount,
       payment_status,
       next_due_date,
       customers!inner (
+        customer_code,
         full_name,
-        primary_phone,
-        locality,
+        phone_number,
+        area,
         address
       )
     `
@@ -164,40 +168,42 @@ reportRoutes.get('/reports/export.csv', async (c) => {
   const headers = [
     'Service ID',
     'Service Date',
+    'Customer Code',
     'Customer Name',
-    'Primary Phone',
-    'Locality',
+    'Phone Number',
+    'Area',
     'Service Type',
-    'Tank Capacity',
+    'Tank Details',
     'Price',
     'Discount',
     'Total Amount',
     'Amount Paid',
-    'Outstanding Balance',
+    'Balance Amount',
     'Payment Status',
     'Next Due Date',
   ];
 
   const rows = (data ?? []).map((row) => {
     const cust = row.customers as unknown as {
+      customer_code: string;
       full_name: string;
-      primary_phone: string;
-      locality: string | null;
+      phone_number: string;
+      area: string | null;
     };
-    const outstanding = Math.max(0, Number(row.total_amount) - Number(row.amount_paid));
     return [
-      row.service_id,
+      row.id,
       row.service_date,
+      cust.customer_code,
       cust.full_name,
-      cust.primary_phone,
-      cust.locality ?? '',
+      cust.phone_number,
+      cust.area ?? '',
       row.service_type,
-      row.tank_capacity ?? '',
+      row.tank_details ?? '',
       row.price,
       row.discount,
       row.total_amount,
       row.amount_paid,
-      outstanding.toFixed(2),
+      row.balance_amount,
       row.payment_status,
       row.next_due_date ?? '',
     ]

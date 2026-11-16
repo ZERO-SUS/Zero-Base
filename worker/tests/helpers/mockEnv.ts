@@ -1,53 +1,65 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Env, ServiceOverrides } from '../../src/types';
 
+export const OWNER_IDS = [
+  '11111111-1111-1111-1111-111111111111',
+  '22222222-2222-2222-2222-222222222222',
+  '33333333-3333-3333-3333-333333333333',
+] as const;
+
+export const NON_OWNER_ID = '44444444-4444-4444-4444-444444444444';
+
 export interface InMemoryDb {
+  owner_allowlist: Array<Record<string, unknown>>;
   profiles: Array<Record<string, unknown>>;
   customers: Array<Record<string, unknown>>;
   services: Array<Record<string, unknown>>;
   payments: Array<Record<string, unknown>>;
-  attachments: Array<Record<string, unknown>>;
+  service_files: Array<Record<string, unknown>>;
   reminders: Array<Record<string, unknown>>;
   audit_logs: Array<Record<string, unknown>>;
   business_settings: Array<Record<string, unknown>>;
-  failNextAttachmentInsert: boolean;
+  failNextFileInsert: boolean;
+  customerSeq: number;
 }
 
 export function createInitialDb(): InMemoryDb {
   return {
+    owner_allowlist: [
+      { user_id: OWNER_IDS[0], label: 'Owner Login 1', is_active: true },
+      { user_id: OWNER_IDS[1], label: 'Owner Login 2', is_active: true },
+      { user_id: OWNER_IDS[2], label: 'Owner Login 3', is_active: true },
+    ],
     profiles: [
       {
-        id: '11111111-1111-1111-1111-111111111111',
-        email: 'admin@zerobase.local',
-        full_name: 'Primary Admin',
+        id: OWNER_IDS[0],
+        email: 'owner1@zerobase.local',
+        full_name: 'Owner Login 1',
         role: 'admin',
-        is_active: true,
         theme_mode: 'dark',
         accent_color: '#2563EB',
       },
       {
-        id: '22222222-2222-2222-2222-222222222222',
-        email: 'staff@zerobase.local',
-        full_name: 'Field Staff',
-        role: 'staff',
-        is_active: true,
+        id: OWNER_IDS[1],
+        email: 'owner2@zerobase.local',
+        full_name: 'Owner Login 2',
+        role: 'admin',
         theme_mode: 'light',
-        accent_color: '#059669',
+        accent_color: '#2563EB',
       },
       {
-        id: '33333333-3333-3333-3333-333333333333',
-        email: 'disabled@zerobase.local',
-        full_name: 'Disabled User',
-        role: 'staff',
-        is_active: false,
-        theme_mode: 'light',
+        id: OWNER_IDS[2],
+        email: 'owner3@zerobase.local',
+        full_name: 'Owner Login 3',
+        role: 'admin',
+        theme_mode: 'system',
         accent_color: '#2563EB',
       },
     ],
     customers: [],
     services: [],
     payments: [],
-    attachments: [],
+    service_files: [],
     reminders: [],
     audit_logs: [],
     business_settings: [
@@ -62,7 +74,8 @@ export function createInitialDb(): InMemoryDb {
         default_reminder_months: 6,
       },
     ],
-    failNextAttachmentInsert: false,
+    failNextFileInsert: false,
+    customerSeq: 1,
   };
 }
 
@@ -71,7 +84,7 @@ function normalizePhone(val: unknown): string {
 }
 
 function recalcServiceFinancials(db: InMemoryDb, serviceId: string) {
-  const srv = db.services.find((s) => s.service_id === serviceId);
+  const srv = db.services.find((s) => s.id === serviceId);
   if (!srv) return;
 
   const totalAmount = Number((Number(srv.price) - Number(srv.discount ?? 0)).toFixed(2));
@@ -88,6 +101,7 @@ function recalcServiceFinancials(db: InMemoryDb, serviceId: string) {
     .reduce((acc, p) => acc + Number(p.amount), 0);
   const netPaid = Math.max(0, Number((grossPaid - refunded).toFixed(2)));
   srv.amount_paid = netPaid;
+  srv.balance_amount = Math.max(0, Number((totalAmount - netPaid).toFixed(2)));
 
   if (refunded > 0 && netPaid <= 0) {
     srv.payment_status = 'Refunded';
@@ -102,87 +116,76 @@ function recalcServiceFinancials(db: InMemoryDb, serviceId: string) {
   }
 }
 
-export function createMockR2Bucket() {
-  const store = new Map<
-    string,
-    {
-      data: Uint8Array;
-      httpMetadata?: { contentType?: string };
-      customMetadata?: Record<string, string>;
-      uploaded: Date;
-    }
-  >();
+export function createMockSupabaseStorage() {
+  const store = new Map<string, { data: Uint8Array; contentType: string; updatedAt: string }>();
 
-  const bucket = {
-    async put(key: string, value: ArrayBuffer | Uint8Array | string, options?: R2PutOptions) {
-      let bytes: Uint8Array;
-      if (typeof value === 'string') {
-        bytes = new TextEncoder().encode(value);
-      } else if (value instanceof ArrayBuffer) {
-        bytes = new Uint8Array(value);
-      } else {
-        bytes = new Uint8Array(value);
+  return {
+    store,
+    from(bucket: string) {
+      if (bucket !== 'zero-base-files') {
+        throw new Error(`Unexpected bucket: ${bucket}`);
       }
-      store.set(key, {
-        data: bytes,
-        httpMetadata: options?.httpMetadata as { contentType?: string } | undefined,
-        customMetadata: options?.customMetadata,
-        uploaded: new Date(),
-      });
-      return { key, size: bytes.byteLength } as unknown as R2Object;
-    },
-    async get(key: string) {
-      const item = store.get(key);
-      if (!item) return null;
       return {
-        key,
-        size: item.data.byteLength,
-        httpMetadata: item.httpMetadata ?? {},
-        customMetadata: item.customMetadata ?? {},
-        body: new ReadableStream({
-          start(controller) {
-            controller.enqueue(item.data);
-            controller.close();
-          },
-        }),
-        async arrayBuffer() {
-          return item.data.buffer.slice(
-            item.data.byteOffset,
-            item.data.byteOffset + item.data.byteLength
-          );
+        async upload(path: string, body: Uint8Array, opts?: { contentType?: string }) {
+          store.set(path, {
+            data: new Uint8Array(body),
+            contentType: opts?.contentType ?? 'application/octet-stream',
+            updatedAt: new Date().toISOString(),
+          });
+          return { data: { path }, error: null };
         },
-      } as unknown as R2ObjectBody;
-    },
-    async delete(keys: string | string[]) {
-      const list = Array.isArray(keys) ? keys : [keys];
-      for (const k of list) {
-        store.delete(k);
-      }
-    },
-    async list(options?: R2ListOptions) {
-      const prefix = options?.prefix ?? '';
-      const objects = Array.from(store.entries())
-        .filter(([k]) => k.startsWith(prefix))
-        .map(([key, val]) => ({
-          key,
-          size: val.data.byteLength,
-          uploaded: val.uploaded,
-        }));
-      return {
-        objects,
-        truncated: false,
-      } as unknown as R2Objects;
+        async remove(paths: string[]) {
+          for (const p of paths) store.delete(p);
+          return { data: paths, error: null };
+        },
+        async createSignedUrl(path: string, expiresIn: number, opts?: { download?: string }) {
+          if (!store.has(path)) {
+            return { data: null, error: { message: 'Object not found' } };
+          }
+          const dl = opts?.download ? `&download=${encodeURIComponent(opts.download)}` : '';
+          return {
+            data: {
+              signedUrl: `https://fskcdtpdkjgjaksqwjaf.supabase.co/storage/v1/object/sign/zero-base-files/${path}?token=signed-ttl-${expiresIn}${dl}`,
+            },
+            error: null,
+          };
+        },
+        async list(prefix = '') {
+          const cleanPrefix = prefix ? `${prefix.replace(/\/$/, '')}/` : '';
+          const items: Array<{ id: string | null; name: string; metadata?: { size: number }; updated_at: string }> = [];
+          const seenFolders = new Set<string>();
+
+          for (const [fullPath, meta] of store.entries()) {
+            if (!fullPath.startsWith(cleanPrefix)) continue;
+            const remainder = fullPath.slice(cleanPrefix.length);
+            const slashIdx = remainder.indexOf('/');
+            if (slashIdx === -1) {
+              items.push({
+                id: crypto.randomUUID(),
+                name: remainder,
+                metadata: { size: meta.data.byteLength },
+                updated_at: meta.updatedAt,
+              });
+            } else {
+              const folder = remainder.slice(0, slashIdx);
+              if (!seenFolders.has(folder)) {
+                seenFolders.add(folder);
+                items.push({ id: null, name: folder, updated_at: meta.updatedAt });
+              }
+            }
+          }
+          return { data: items, error: null };
+        },
+      };
     },
   };
-
-  return { bucket: bucket as unknown as R2Bucket, store };
 }
 
 class MockQueryBuilder {
   private filters: Array<(row: Record<string, unknown>) => boolean> = [];
   private orders: Array<{ col: string; asc: boolean }> = [];
   private limitNum: number | null = null;
-  private op: 'select' | 'insert' | 'update' = 'select';
+  private op: 'select' | 'insert' | 'update' | 'delete' = 'select';
   private payload: Record<string, unknown> | Array<Record<string, unknown>> | null = null;
 
   constructor(
@@ -203,6 +206,11 @@ class MockQueryBuilder {
   update(data: Record<string, unknown>) {
     this.op = 'update';
     this.payload = data;
+    return this;
+  }
+
+  delete() {
+    this.op = 'delete';
     return this;
   }
 
@@ -232,7 +240,6 @@ class MockQueryBuilder {
   }
 
   or(expr: string) {
-    // Parse simple `col.ilike.%val%` clauses
     const parts = expr.split(',').map((p) => p.trim());
     this.filters.push((r) =>
       parts.some((p) => {
@@ -260,19 +267,19 @@ class MockQueryBuilder {
   private enrichRow(row: Record<string, unknown>): Record<string, unknown> {
     const copy = { ...row };
     if (this.table === 'services') {
-      const cust = this.db.customers.find((c) => c.customer_id === row.customer_id);
+      const cust = this.db.customers.find((c) => c.id === row.customer_id);
       if (cust) copy.customers = { ...cust };
     }
     if (this.table === 'payments') {
-      const srv = this.db.services.find((s) => s.service_id === row.service_id);
+      const srv = this.db.services.find((s) => s.id === row.service_id);
       if (srv) {
-        const cust = this.db.customers.find((c) => c.customer_id === srv.customer_id);
+        const cust = this.db.customers.find((c) => c.id === srv.customer_id);
         copy.services = { ...srv, customers: cust ? { ...cust } : undefined };
       }
     }
     if (this.table === 'reminders') {
-      const cust = this.db.customers.find((c) => c.customer_id === row.customer_id);
-      const srv = this.db.services.find((s) => s.service_id === row.service_id);
+      const cust = this.db.customers.find((c) => c.id === row.customer_id);
+      const srv = row.service_id ? this.db.services.find((s) => s.id === row.service_id) : null;
       if (cust) copy.customers = { ...cust };
       if (srv) copy.services = { ...srv };
     }
@@ -283,8 +290,8 @@ class MockQueryBuilder {
     const rows = this.db[this.table] as Array<Record<string, unknown>>;
 
     if (this.op === 'insert' && this.payload) {
-      if (this.table === 'attachments' && this.db.failNextAttachmentInsert) {
-        this.db.failNextAttachmentInsert = false;
+      if (this.table === 'service_files' && this.db.failNextFileInsert) {
+        this.db.failNextFileInsert = false;
         return { data: null, error: { message: 'Simulated DB insert failure' } };
       }
       const list = Array.isArray(this.payload) ? this.payload : [this.payload];
@@ -296,28 +303,32 @@ class MockQueryBuilder {
           updated_at: item.updated_at ?? new Date().toISOString(),
           archived_at: item.archived_at ?? null,
         };
-        if (this.table === 'customers' && !rec.customer_id) rec.customer_id = crypto.randomUUID();
-        if (this.table === 'services' && !rec.service_id) {
-          rec.service_id = crypto.randomUUID();
+        if (this.table === 'customers') {
+          if (!rec.id) rec.id = crypto.randomUUID();
+          if (!rec.customer_code) {
+            rec.customer_code = `ZB-${String(this.db.customerSeq++).padStart(5, '0')}`;
+          }
+        }
+        if (this.table === 'services') {
+          if (!rec.id) rec.id = crypto.randomUUID();
           rec.discount = rec.discount ?? 0;
         }
-        if (this.table === 'payments' && !rec.payment_id) rec.payment_id = crypto.randomUUID();
-        if (this.table === 'attachments' && !rec.attachment_id) {
-          rec.attachment_id = crypto.randomUUID();
-        }
-        if (this.table === 'reminders' && !rec.reminder_id) rec.reminder_id = crypto.randomUUID();
+        if (this.table === 'payments' && !rec.id) rec.id = crypto.randomUUID();
+        if (this.table === 'service_files' && !rec.id) rec.id = crypto.randomUUID();
+        if (this.table === 'reminders' && !rec.id) rec.id = crypto.randomUUID();
         if (this.table === 'audit_logs' && !rec.audit_id) rec.audit_id = crypto.randomUUID();
 
         rows.push(rec);
 
         if (this.table === 'services') {
-          recalcServiceFinancials(this.db, String(rec.service_id));
+          recalcServiceFinancials(this.db, String(rec.id));
           if (rec.next_due_date) {
             this.db.reminders.push({
-              reminder_id: crypto.randomUUID(),
-              service_id: rec.service_id,
+              id: crypto.randomUUID(),
+              service_id: rec.id,
               customer_id: rec.customer_id,
               due_date: rec.next_due_date,
+              reminder_type: 'service_due',
               status: 'active',
               snoozed_until: null,
               notes: null,
@@ -340,14 +351,21 @@ class MockQueryBuilder {
       const matched = rows.filter((r) => this.filters.every((f) => f(r)));
       for (const r of matched) {
         Object.assign(r, this.payload, { updated_at: new Date().toISOString() });
-        if (this.table === 'services') {
-          recalcServiceFinancials(this.db, String(r.service_id));
-        }
-        if (this.table === 'payments') {
-          recalcServiceFinancials(this.db, String(r.service_id));
-        }
+        if (this.table === 'services') recalcServiceFinancials(this.db, String(r.id));
+        if (this.table === 'payments') recalcServiceFinancials(this.db, String(r.service_id));
       }
       return { data: matched.map((r) => this.enrichRow(r)), error: null };
+    }
+
+    if (this.op === 'delete') {
+      const remaining: Array<Record<string, unknown>> = [];
+      const deleted: Array<Record<string, unknown>> = [];
+      for (const r of rows) {
+        if (this.filters.every((f) => f(r))) deleted.push(r);
+        else remaining.push(r);
+      }
+      (this.db[this.table] as Array<Record<string, unknown>>) = remaining;
+      return { data: deleted, error: null };
     }
 
     let result = rows.filter((r) => this.filters.every((f) => f(r))).map((r) => this.enrichRow(r));
@@ -389,20 +407,21 @@ class MockQueryBuilder {
 
 export function createTestHarness() {
   const db = createInitialDb();
-  const { bucket, store } = createMockR2Bucket();
+  const storage = createMockSupabaseStorage();
 
   const env: Env = {
-    FILES_BUCKET: bucket,
-    SUPABASE_URL: 'https://test.supabase.co',
-    SUPABASE_ANON_KEY: 'test-anon-key',
-    FILE_SIGNING_SECRET: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-    ALLOWED_ORIGINS: 'http://localhost:5173',
+    SUPABASE_URL: 'https://fskcdtpdkjgjaksqwjaf.supabase.co',
+    SUPABASE_ANON_KEY: 'test-publishable-key',
+    OWNER_USER_IDS: OWNER_IDS.join(','),
+    STORAGE_BUCKET: 'zero-base-files',
+    ALLOWED_ORIGINS: 'https://zero-base.pages.dev,http://localhost:5173',
     ENVIRONMENT: 'test',
     BUSINESS_TIMEZONE: 'Asia/Kolkata',
     MAX_UPLOAD_BYTES: '15728640',
   };
 
   const mockSupabase = {
+    storage,
     from(table: keyof InMemoryDb) {
       return new MockQueryBuilder(db, table);
     },
@@ -411,11 +430,11 @@ export function createTestHarness() {
         const phone = String(params?.p_phone ?? '');
         const norm = normalizePhone(phone);
         const matches = db.customers.filter((c) => {
-          const p1 = normalizePhone(c.primary_phone);
-          const p2 = normalizePhone(c.secondary_phone);
+          const p1 = normalizePhone(c.phone_number);
+          const p2 = normalizePhone(c.alternate_phone);
           return (
-            c.primary_phone === phone ||
-            c.secondary_phone === phone ||
+            c.phone_number === phone ||
+            c.alternate_phone === phone ||
             (norm.length >= 6 &&
               (p1 === norm ||
                 p2 === norm ||
@@ -431,7 +450,7 @@ export function createTestHarness() {
         const activeServices = db.services.filter((s) => !s.archived_at);
         return {
           data: {
-            today_ist: '2026-11-16',
+            today_ist: '2026-11-17',
             total_customers: activeCustomers.length,
             total_services: activeServices.length,
             services_this_month: activeServices.length,
@@ -441,7 +460,7 @@ export function createTestHarness() {
             due_today: 0,
             overdue_services: 0,
             pending_payments_amount: activeServices.reduce(
-              (acc, s) => acc + Math.max(0, Number(s.total_amount) - Number(s.amount_paid)),
+              (acc, s) => acc + Number(s.balance_amount ?? 0),
               0
             ),
             pending_payments_count: activeServices.filter(
@@ -469,10 +488,7 @@ export function createTestHarness() {
             end_date: end,
             total_services: srvs.length,
             total_billed: srvs.reduce((a, s) => a + Number(s.total_amount), 0),
-            outstanding_balance: srvs.reduce(
-              (a, s) => a + Math.max(0, Number(s.total_amount) - Number(s.amount_paid)),
-              0
-            ),
+            outstanding_balance: srvs.reduce((a, s) => a + Number(s.balance_amount), 0),
             total_collected: pays.reduce(
               (a, p) => a + (p.payment_type === 'payment' ? Number(p.amount) : -Number(p.amount)),
               0
@@ -498,15 +514,10 @@ export function createTestHarness() {
 
   const overrides: ServiceOverrides = {
     async verifyJwt(token) {
-      if (token === 'admin-token') {
-        return { sub: '11111111-1111-1111-1111-111111111111', email: 'admin@zerobase.local' };
-      }
-      if (token === 'staff-token') {
-        return { sub: '22222222-2222-2222-2222-222222222222', email: 'staff@zerobase.local' };
-      }
-      if (token === 'disabled-token') {
-        return { sub: '33333333-3333-3333-3333-333333333333', email: 'disabled@zerobase.local' };
-      }
+      if (token === 'owner-1-token') return { sub: OWNER_IDS[0], email: 'owner1@zerobase.local' };
+      if (token === 'owner-2-token') return { sub: OWNER_IDS[1], email: 'owner2@zerobase.local' };
+      if (token === 'owner-3-token') return { sub: OWNER_IDS[2], email: 'owner3@zerobase.local' };
+      if (token === 'non-owner-token') return { sub: NON_OWNER_ID, email: 'stranger@example.com' };
       throw new Error('Invalid token');
     },
     createSupabase() {
@@ -514,5 +525,5 @@ export function createTestHarness() {
     },
   };
 
-  return { db, env, overrides, r2Store: store };
+  return { db, env, overrides, storageStore: storage.store };
 }
