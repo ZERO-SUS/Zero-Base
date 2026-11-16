@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Bell,
@@ -7,6 +7,7 @@ import {
   Clock,
   PhoneCall,
   Plus,
+  Search,
   XCircle,
 } from 'lucide-react';
 import { ServiceFormModal } from '../components/services/ServiceFormModal';
@@ -14,7 +15,7 @@ import { ReminderCategoryBadge } from '../components/ui/Badge';
 import { EmptyState, ErrorBanner, SkeletonCard } from '../components/ui/Feedback';
 import { Modal } from '../components/ui/Modal';
 import { apiFetch, ApiError } from '../lib/api';
-import { formatServiceDate } from '../lib/format';
+import { formatServiceDate, getTodayIstInputDate } from '../lib/format';
 import type { Customer, ReminderCategory, ReminderRecord } from '../types/domain';
 
 interface RemindersResponse {
@@ -31,6 +32,7 @@ const TABS: Array<{ label: string; value: string }> = [
   { label: 'Contacted', value: 'Contacted' },
   { label: 'Confirmed', value: 'Confirmed' },
   { label: 'Snoozed', value: 'Snoozed' },
+  { label: 'Completed', value: 'Completed' },
   { label: 'Dismissed', value: 'Dismissed' },
 ];
 
@@ -41,14 +43,21 @@ export function RemindersPage() {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  // Edit due date / snooze modal
   const [dateModal, setDateModal] = useState<{
     reminder: ReminderRecord;
     mode: 'edit' | 'snooze';
   } | null>(null);
   const [modalDate, setModalDate] = useState('');
 
-  // Create new service from reminder
+  // Create custom reminder modal
+  const [createOpen, setCreateOpen] = useState(false);
+  const [custQuery, setCustQuery] = useState('');
+  const [custResults, setCustResults] = useState<Customer[]>([]);
+  const [pickedCustomer, setPickedCustomer] = useState<Customer | null>(null);
+  const [newDueDate, setNewDueDate] = useState(getTodayIstInputDate());
+  const [newNotes, setNewNotes] = useState('');
+  const [creating, setCreating] = useState(false);
+
   const [serviceFromReminder, setServiceFromReminder] = useState<{
     reminder: ReminderRecord;
     customer: Customer;
@@ -57,7 +66,9 @@ export function RemindersPage() {
   const loadReminders = useCallback(async () => {
     setLoading(true);
     setError(null);
-    const params = selectedTab ? `?category=${encodeURIComponent(selectedTab)}` : '';
+    const params = selectedTab
+      ? `?category=${encodeURIComponent(selectedTab)}&include_completed=true`
+      : '';
     try {
       const res = await apiFetch<RemindersResponse>(`/api/reminders${params}`);
       setData(res);
@@ -71,6 +82,26 @@ export function RemindersPage() {
   useEffect(() => {
     void loadReminders();
   }, [loadReminders]);
+
+  useEffect(() => {
+    if (!createOpen) return;
+    const q = custQuery.trim();
+    if (q.length < 2) {
+      setCustResults([]);
+      return;
+    }
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await apiFetch<{ customers: Customer[] }>(
+          `/api/customers?q=${encodeURIComponent(q)}&limit=8`
+        );
+        setCustResults(res.customers);
+      } catch {
+        // Ignore transient search error
+      }
+    }, 220);
+    return () => window.clearTimeout(timer);
+  }, [custQuery, createOpen]);
 
   const updateReminderStatus = async (
     reminderId: string,
@@ -91,16 +122,43 @@ export function RemindersPage() {
     }
   };
 
+  const handleCreateCustomReminder = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pickedCustomer) return;
+    setCreating(true);
+    setError(null);
+    try {
+      await apiFetch('/api/reminders', {
+        method: 'POST',
+        body: JSON.stringify({
+          customer_id: pickedCustomer.id,
+          due_date: newDueDate,
+          reminder_type: 'custom',
+          notes: newNotes.trim() || null,
+        }),
+      });
+      setCreateOpen(false);
+      setPickedCustomer(null);
+      setCustQuery('');
+      setNewNotes('');
+      await loadReminders();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to create reminder.');
+    } finally {
+      setCreating(false);
+    }
+  };
+
   const handleCreateServiceFromReminder = (r: ReminderRecord) => {
     if (!r.customers) return;
     const customer: Customer = {
-      customer_id: r.customers.customer_id,
+      id: r.customers.id,
+      customer_code: r.customers.customer_code,
       full_name: r.customers.full_name,
-      primary_phone: r.customers.primary_phone,
-      secondary_phone: r.customers.secondary_phone ?? null,
+      phone_number: r.customers.phone_number,
+      alternate_phone: r.customers.alternate_phone ?? null,
       address: r.customers.address ?? '',
-      locality: r.customers.locality ?? null,
-      landmark: null,
+      area: r.customers.area ?? null,
       notes: null,
       created_at: '',
       updated_at: '',
@@ -111,11 +169,28 @@ export function RemindersPage() {
 
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight text-text-primary">Reminders</h1>
-        <p className="text-xs text-text-secondary">
-          Track due tank cleanings. Reminders never auto-create completed services—confirm and record services manually.
-        </p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight text-text-primary">Reminders</h1>
+          <p className="text-xs text-text-secondary">
+            Calculated in India Standard Time (Asia/Kolkata). Reminders never auto-create completed services.
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => {
+            setPickedCustomer(null);
+            setCustQuery('');
+            setNewDueDate(getTodayIstInputDate());
+            setNewNotes('');
+            setCreateOpen(true);
+          }}
+          className="zb-btn-primary inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-medium self-start sm:self-auto"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          New Reminder
+        </button>
       </div>
 
       {/* Category Tabs */}
@@ -159,16 +234,16 @@ export function RemindersPage() {
       ) : !data || data.reminders.length === 0 ? (
         <EmptyState
           title="No reminders in this category"
-          description="When services are saved with a next due date, they appear here automatically."
+          description="Create a custom reminder or save a service with a next due date."
           icon={<Bell className="h-5 w-5" />}
         />
       ) : (
         <div className="space-y-3">
           {data.reminders.map((rem) => {
-            const busy = busyId === rem.reminder_id;
+            const busy = busyId === rem.id;
             return (
               <div
-                key={rem.reminder_id}
+                key={rem.id}
                 className="zb-card flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between"
               >
                 <div className="space-y-1 min-w-0">
@@ -183,8 +258,8 @@ export function RemindersPage() {
                   </div>
                   <p className="text-xs text-text-secondary">
                     Due Date: <strong className="text-text-primary">{formatServiceDate(rem.due_date)}</strong> •{' '}
-                    <span className="font-mono">{rem.customers?.primary_phone}</span>
-                    {rem.customers?.locality ? ` • ${rem.customers.locality}` : ''}
+                    <span className="font-mono">{rem.customers?.phone_number}</span>
+                    {rem.customers?.area ? ` • ${rem.customers.area}` : ''}
                   </p>
                   {rem.services && (
                     <p className="text-[11px] text-text-muted">
@@ -192,6 +267,7 @@ export function RemindersPage() {
                       {formatServiceDate(rem.services.service_date)}
                     </p>
                   )}
+                  {rem.notes && <p className="text-[11px] text-text-secondary">{rem.notes}</p>}
                 </div>
 
                 <div className="flex flex-wrap items-center gap-1.5 shrink-0">
@@ -213,7 +289,7 @@ export function RemindersPage() {
                       type="button"
                       disabled={busy}
                       onClick={() =>
-                        void updateReminderStatus(rem.reminder_id, { status: 'contacted' })
+                        void updateReminderStatus(rem.id, { status: 'contacted' })
                       }
                       className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs font-medium hover:bg-bg disabled:opacity-50"
                     >
@@ -227,7 +303,7 @@ export function RemindersPage() {
                       type="button"
                       disabled={busy}
                       onClick={() =>
-                        void updateReminderStatus(rem.reminder_id, { status: 'confirmed' })
+                        void updateReminderStatus(rem.id, { status: 'confirmed' })
                       }
                       className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs font-medium hover:bg-bg disabled:opacity-50"
                     >
@@ -254,7 +330,7 @@ export function RemindersPage() {
                       type="button"
                       disabled={busy}
                       onClick={() =>
-                        void updateReminderStatus(rem.reminder_id, { status: 'dismissed' })
+                        void updateReminderStatus(rem.id, { status: 'dismissed' })
                       }
                       className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-text-muted hover:bg-error-soft hover:text-error disabled:opacity-50"
                     >
@@ -279,6 +355,7 @@ export function RemindersPage() {
         </div>
       )}
 
+      {/* Edit Due Date / Snooze Modal */}
       <Modal
         open={Boolean(dateModal)}
         onClose={() => setDateModal(null)}
@@ -290,7 +367,7 @@ export function RemindersPage() {
             e.preventDefault();
             if (!dateModal) return;
             await updateReminderStatus(
-              dateModal.reminder.reminder_id,
+              dateModal.reminder.id,
               dateModal.mode === 'snooze'
                 ? { status: 'snoozed', snoozed_until: modalDate }
                 : { due_date: modalDate, status: 'active' }
@@ -326,13 +403,118 @@ export function RemindersPage() {
         </form>
       </Modal>
 
+      {/* Custom Reminder Modal */}
+      <Modal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        title="Schedule Custom Reminder"
+        subtitle="Creates a follow-up reminder for an existing customer"
+      >
+        <form onSubmit={handleCreateCustomReminder} className="space-y-4">
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-text-secondary">
+              Customer <span className="text-error">*</span>
+            </label>
+            {pickedCustomer ? (
+              <div className="flex items-center justify-between rounded-lg border border-border bg-bg px-3 py-2 text-xs">
+                <div>
+                  <p className="font-semibold text-text-primary">
+                    {pickedCustomer.full_name} ({pickedCustomer.customer_code})
+                  </p>
+                  <p className="text-text-secondary">{pickedCustomer.phone_number}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPickedCustomer(null)}
+                  className="text-accent hover:underline"
+                >
+                  Change
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-text-muted" />
+                  <input
+                    type="text"
+                    value={custQuery}
+                    onChange={(e) => setCustQuery(e.target.value)}
+                    placeholder="Search customer by name or phone..."
+                    className="w-full rounded-lg border pl-9 pr-3 py-2 text-sm"
+                  />
+                </div>
+                {custResults.length > 0 && (
+                  <div className="max-h-36 overflow-y-auto rounded-lg border border-border divide-y divide-border">
+                    {custResults.map((c) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => {
+                          setPickedCustomer(c);
+                          setCustResults([]);
+                        }}
+                        className="flex w-full justify-between px-3 py-2 text-left text-xs hover:bg-bg"
+                      >
+                        <span className="font-medium">{c.full_name}</span>
+                        <span className="font-mono text-text-muted">{c.phone_number}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-text-secondary">
+              Due Date <span className="text-error">*</span>
+            </label>
+            <input
+              type="date"
+              required
+              value={newDueDate}
+              onChange={(e) => setNewDueDate(e.target.value)}
+              className="w-full rounded-lg border px-3 py-2 text-sm"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-text-secondary">Notes</label>
+            <textarea
+              rows={2}
+              value={newNotes}
+              onChange={(e) => setNewNotes(e.target.value)}
+              placeholder="Customer requested callback after 3 months..."
+              className="w-full rounded-lg border px-3 py-2 text-sm"
+            />
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setCreateOpen(false)}
+              className="rounded-lg border border-border px-3.5 py-2 text-xs font-medium"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={!pickedCustomer || creating}
+              className="zb-btn-primary rounded-lg px-4 py-2 text-xs font-medium disabled:opacity-50"
+            >
+              {creating ? 'Saving...' : 'Create Reminder'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
       <ServiceFormModal
         open={Boolean(serviceFromReminder)}
         onClose={() => setServiceFromReminder(null)}
         fixedCustomer={serviceFromReminder?.customer ?? null}
         onSaved={async () => {
           if (serviceFromReminder) {
-            await updateReminderStatus(serviceFromReminder.reminder.reminder_id, {
+            await updateReminderStatus(serviceFromReminder.reminder.id, {
               status: 'completed',
             });
           }

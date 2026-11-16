@@ -4,7 +4,10 @@ import {
   Archive,
   ArchiveRestore,
   ArrowLeft,
+  Download,
   Edit3,
+  FileText,
+  Image as ImageIcon,
   MapPin,
   Phone,
   Plus,
@@ -16,8 +19,14 @@ import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { EmptyState, ErrorBanner, SkeletonCard } from '../components/ui/Feedback';
 import { useAuth } from '../context/AuthContext';
 import { apiFetch, ApiError } from '../lib/api';
-import { formatCurrency, formatServiceDate } from '../lib/format';
-import type { Customer, ServiceRecord } from '../types/domain';
+import { formatBytes, formatCurrency, formatServiceDate } from '../lib/format';
+import type {
+  Customer,
+  PaymentRecord,
+  ReminderRecord,
+  ServiceFileRecord,
+  ServiceRecord,
+} from '../types/domain';
 
 interface CustomerProfileResponse {
   customer: Customer;
@@ -30,6 +39,9 @@ interface CustomerProfileResponse {
     next_scheduled_service: string | null;
   };
   services: ServiceRecord[];
+  payments: PaymentRecord[];
+  reminders: ReminderRecord[];
+  files: ServiceFileRecord[];
 }
 
 export function CustomerProfilePage() {
@@ -69,8 +81,8 @@ export function CustomerProfilePage() {
     setArchiving(true);
     try {
       const endpoint = data.customer.archived_at
-        ? `/api/customers/${data.customer.customer_id}/restore`
-        : `/api/customers/${data.customer.customer_id}/archive`;
+        ? `/api/customers/${data.customer.id}/restore`
+        : `/api/customers/${data.customer.id}/archive`;
       await apiFetch(endpoint, { method: 'POST' });
       setConfirmArchiveOpen(false);
       void loadProfile();
@@ -78,6 +90,15 @@ export function CustomerProfilePage() {
       setError(err instanceof ApiError ? err.message : 'Failed to update archive status.');
     } finally {
       setArchiving(false);
+    }
+  };
+
+  const openSignedFile = async (fileId: string) => {
+    try {
+      const res = await apiFetch<{ url: string }>(`/api/files/${fileId}`);
+      window.open(res.url, '_blank', 'noopener,noreferrer');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to open file.');
     }
   };
 
@@ -102,7 +123,7 @@ export function CustomerProfilePage() {
     );
   }
 
-  const { customer, summary, services } = data;
+  const { customer, summary, services, payments, files } = data;
 
   return (
     <div className="space-y-6">
@@ -119,9 +140,10 @@ export function CustomerProfilePage() {
             <h1 className="text-xl font-semibold tracking-tight text-text-primary">
               {customer.full_name}
             </h1>
+            <Badge variant="accent">{customer.customer_code}</Badge>
             {customer.archived_at && <Badge variant="warning">Archived</Badge>}
           </div>
-          <p className="mt-0.5 font-mono text-xs text-text-muted">ID: {customer.customer_id}</p>
+          <p className="mt-0.5 font-mono text-xs text-text-muted">UUID: {customer.id}</p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -163,7 +185,7 @@ export function CustomerProfilePage() {
         </div>
       </div>
 
-      {/* Customer Details & Summary Metrics */}
+      {/* Contact & Summary */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div className="zb-card p-5 space-y-3">
           <h2 className="text-xs font-semibold uppercase tracking-wider text-text-muted">
@@ -172,20 +194,19 @@ export function CustomerProfilePage() {
           <div className="space-y-2 text-sm">
             <div className="flex items-center gap-2">
               <Phone className="h-4 w-4 text-text-muted shrink-0" />
-              <span className="font-mono text-text-primary">{customer.primary_phone}</span>
+              <span className="font-mono text-text-primary">{customer.phone_number}</span>
             </div>
-            {customer.secondary_phone && (
+            {customer.alternate_phone && (
               <div className="flex items-center gap-2">
                 <Phone className="h-4 w-4 text-text-muted shrink-0" />
-                <span className="font-mono text-text-secondary">{customer.secondary_phone}</span>
+                <span className="font-mono text-text-secondary">{customer.alternate_phone}</span>
               </div>
             )}
             <div className="flex items-start gap-2">
               <MapPin className="mt-0.5 h-4 w-4 text-text-muted shrink-0" />
               <div className="text-text-secondary">
                 <p className="text-text-primary">{customer.address}</p>
-                {customer.locality && <p>{customer.locality}</p>}
-                {customer.landmark && <p className="text-xs">Landmark: {customer.landmark}</p>}
+                {customer.area && <p>{customer.area}</p>}
               </div>
             </div>
           </div>
@@ -252,7 +273,7 @@ export function CustomerProfilePage() {
         </div>
       </div>
 
-      {/* Complete Service History for this Customer */}
+      {/* Complete Service History */}
       <section className="zb-card overflow-hidden">
         <div className="flex items-center justify-between border-b border-border px-5 py-3.5">
           <h2 className="text-sm font-semibold text-text-primary">
@@ -276,20 +297,20 @@ export function CustomerProfilePage() {
                   <th className="px-4 py-3">Service Type</th>
                   <th className="px-4 py-3">Billed</th>
                   <th className="px-4 py-3">Paid</th>
+                  <th className="px-4 py-3">Balance</th>
                   <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3">Next Due</th>
                   <th className="px-4 py-3 text-right">Details</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {services.map((srv) => (
-                  <tr key={srv.service_id} className="hover:bg-bg/70">
+                  <tr key={srv.id} className="hover:bg-bg/70">
                     <td className="px-4 py-3 font-medium text-text-primary">
                       {formatServiceDate(srv.service_date)}
                     </td>
                     <td className="px-4 py-3 text-text-secondary">
                       {srv.service_type}
-                      {srv.tank_capacity ? ` (${srv.tank_capacity})` : ''}
+                      {srv.tank_details ? ` (${srv.tank_details})` : ''}
                     </td>
                     <td className="px-4 py-3 font-medium">
                       {formatCurrency(srv.total_amount, sym)}
@@ -297,15 +318,15 @@ export function CustomerProfilePage() {
                     <td className="px-4 py-3 text-text-secondary">
                       {formatCurrency(srv.amount_paid, sym)}
                     </td>
+                    <td className="px-4 py-3 text-text-secondary">
+                      {formatCurrency(srv.balance_amount, sym)}
+                    </td>
                     <td className="px-4 py-3">
                       <PaymentStatusBadge status={srv.payment_status} />
                     </td>
-                    <td className="px-4 py-3 text-xs text-text-secondary">
-                      {formatServiceDate(srv.next_due_date)}
-                    </td>
                     <td className="px-4 py-3 text-right">
                       <Link
-                        to={`/services/${srv.service_id}`}
+                        to={`/services/${srv.id}`}
                         className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-text-primary hover:bg-bg"
                       >
                         Open Service
@@ -318,6 +339,78 @@ export function CustomerProfilePage() {
           </div>
         )}
       </section>
+
+      {/* Previous Payments & Uploaded Files for this Customer */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <section className="zb-card overflow-hidden">
+          <div className="border-b border-border px-5 py-3.5">
+            <h2 className="text-sm font-semibold text-text-primary">
+              Payment Transactions ({payments.length})
+            </h2>
+          </div>
+          {payments.length === 0 ? (
+            <div className="p-5 text-xs text-text-muted">No payments recorded for this customer yet.</div>
+          ) : (
+            <div className="divide-y divide-border">
+              {payments.map((p) => (
+                <div key={p.id} className="flex items-center justify-between px-5 py-3 text-xs">
+                  <div>
+                    <p className="font-medium text-text-primary">
+                      {formatServiceDate(p.payment_date)} • {p.payment_method}
+                    </p>
+                    <p className="text-text-muted">
+                      {p.reference_number ? `Ref: ${p.reference_number}` : 'No reference'}
+                    </p>
+                  </div>
+                  <span className="text-sm font-semibold text-text-primary">
+                    {p.payment_type === 'refund' ? '-' : ''}
+                    {formatCurrency(p.amount, sym)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="zb-card overflow-hidden">
+          <div className="border-b border-border px-5 py-3.5">
+            <h2 className="text-sm font-semibold text-text-primary">
+              Uploaded Files ({files.length})
+            </h2>
+          </div>
+          {files.length === 0 ? (
+            <div className="p-5 text-xs text-text-muted">No files uploaded for this customer yet.</div>
+          ) : (
+            <div className="divide-y divide-border">
+              {files.map((f) => (
+                <div key={f.id} className="flex items-center justify-between gap-3 px-5 py-3 text-xs">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    {f.mime_type.startsWith('image/') ? (
+                      <ImageIcon className="h-4 w-4 shrink-0 text-text-muted" />
+                    ) : (
+                      <FileText className="h-4 w-4 shrink-0 text-text-muted" />
+                    )}
+                    <div className="min-w-0">
+                      <p className="truncate font-medium text-text-primary">{f.file_name}</p>
+                      <p className="text-text-muted">
+                        {f.category} • {formatBytes(f.file_size)}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void openSignedFile(f.id)}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs font-medium hover:bg-bg"
+                  >
+                    <Download className="h-3 w-3" />
+                    Open
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
 
       <CustomerFormModal
         open={editModalOpen}
@@ -341,7 +434,7 @@ export function CustomerProfilePage() {
         message={
           customer.archived_at
             ? `Restore ${customer.full_name} to active customer lists?`
-            : `Archive ${customer.full_name}? Historical services, payments, and R2 attachments remain intact and can be restored anytime.`
+            : `Archive ${customer.full_name}? Historical services, payments, and files remain intact and can be restored anytime.`
         }
         confirmLabel={customer.archived_at ? 'Restore Customer' : 'Archive Customer'}
         danger={!customer.archived_at}

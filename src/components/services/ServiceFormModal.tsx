@@ -30,13 +30,13 @@ export function ServiceFormModal({
 
   const [serviceDate, setServiceDate] = useState(getTodayIstInputDate());
   const [serviceType, setServiceType] = useState(settings.service_types[0] ?? 'Overhead Tank Cleaning');
-  const [tankCapacity, setTankCapacity] = useState('');
+  const [tankDetails, setTankDetails] = useState('');
+  const [description, setDescription] = useState('');
   const [price, setPrice] = useState('1200');
   const [discount, setDiscount] = useState('0');
   const [nextDueDate, setNextDueDate] = useState('');
   const [notes, setNotes] = useState('');
 
-  // Optional initial payment during service creation
   const [recordInitialPayment, setRecordInitialPayment] = useState(false);
   const [initialAmount, setInitialAmount] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Cash');
@@ -54,7 +54,8 @@ export function ServiceFormModal({
     if (existingService) {
       setServiceDate(existingService.service_date);
       setServiceType(existingService.service_type);
-      setTankCapacity(existingService.tank_capacity ?? '');
+      setTankDetails(existingService.tank_details ?? '');
+      setDescription(existingService.description ?? '');
       setPrice(String(existingService.price));
       setDiscount(String(existingService.discount));
       setNextDueDate(existingService.next_due_date ?? '');
@@ -67,7 +68,8 @@ export function ServiceFormModal({
       setCustomerResults([]);
       setServiceDate(today);
       setServiceType(settings.service_types[0] ?? 'Overhead Tank Cleaning');
-      setTankCapacity('');
+      setTankDetails('');
+      setDescription('');
       setPrice('1200');
       setDiscount('0');
       setNextDueDate(addMonthsToIsoDate(today, settings.default_reminder_months || 6));
@@ -131,13 +133,14 @@ export function ServiceFormModal({
     try {
       if (isEdit && existingService) {
         const res = await apiFetch<{ service: ServiceRecord }>(
-          `/api/services/${existingService.service_id}`,
+          `/api/services/${existingService.id}`,
           {
             method: 'PATCH',
             body: JSON.stringify({
               service_date: serviceDate,
               service_type: serviceType,
-              tank_capacity: tankCapacity.trim() || null,
+              tank_details: tankDetails.trim() || null,
+              description: description.trim() || null,
               price: pNum,
               discount: dNum,
               next_due_date: nextDueDate || null,
@@ -158,10 +161,11 @@ export function ServiceFormModal({
         const res = await apiFetch<{ service: ServiceRecord }>('/api/services', {
           method: 'POST',
           body: JSON.stringify({
-            customer_id: selectedCustomer.customer_id,
+            customer_id: selectedCustomer.id,
             service_date: serviceDate,
             service_type: serviceType,
-            tank_capacity: tankCapacity.trim() || null,
+            tank_details: tankDetails.trim() || null,
+            description: description.trim() || null,
             price: pNum,
             discount: dNum,
             next_due_date: nextDueDate || null,
@@ -171,7 +175,7 @@ export function ServiceFormModal({
               ? {
                   amount: initialPayAmount,
                   payment_method: paymentMethod,
-                  transaction_reference: txRef.trim() || null,
+                  reference_number: txRef.trim() || null,
                   payment_date: serviceDate,
                 }
               : null,
@@ -211,10 +215,10 @@ export function ServiceFormModal({
               <div className="flex items-center justify-between rounded-lg border border-border bg-bg px-3 py-2.5">
                 <div>
                   <p className="text-sm font-medium text-text-primary">
-                    {selectedCustomer.full_name}
+                    {selectedCustomer.full_name} ({selectedCustomer.customer_code})
                   </p>
                   <p className="text-xs text-text-secondary">
-                    {selectedCustomer.primary_phone} • {selectedCustomer.address}
+                    {selectedCustomer.phone_number} • {selectedCustomer.address}
                   </p>
                 </div>
                 {!fixedCustomer && (
@@ -235,7 +239,7 @@ export function ServiceFormModal({
                     type="text"
                     value={customerSearch}
                     onChange={(e) => setCustomerSearch(e.target.value)}
-                    placeholder="Search existing customer by name, phone, or locality..."
+                    placeholder="Search existing customer by name, phone, code, or area..."
                     className="w-full rounded-lg border pl-9 pr-3 py-2 text-sm"
                   />
                 </div>
@@ -243,7 +247,7 @@ export function ServiceFormModal({
                   <div className="max-h-40 overflow-y-auto rounded-lg border border-border bg-surface divide-y divide-border">
                     {customerResults.map((c) => (
                       <button
-                        key={c.customer_id}
+                        key={c.id}
                         type="button"
                         onClick={() => {
                           setSelectedCustomer(c);
@@ -252,10 +256,12 @@ export function ServiceFormModal({
                         className="flex w-full items-center justify-between px-3 py-2 text-left text-xs hover:bg-bg"
                       >
                         <div>
-                          <p className="font-medium text-text-primary">{c.full_name}</p>
+                          <p className="font-medium text-text-primary">
+                            {c.full_name} <span className="text-text-muted">({c.customer_code})</span>
+                          </p>
                           <p className="text-text-secondary">{c.address}</p>
                         </div>
-                        <span className="font-mono text-text-muted">{c.primary_phone}</span>
+                        <span className="font-mono text-text-muted">{c.phone_number}</span>
                       </button>
                     ))}
                   </div>
@@ -301,13 +307,13 @@ export function ServiceFormModal({
 
           <div>
             <label className="mb-1.5 block text-xs font-medium text-text-secondary">
-              Tank Capacity
+              Tank Details
             </label>
             <input
               type="text"
-              value={tankCapacity}
-              onChange={(e) => setTankCapacity(e.target.value)}
-              placeholder="e.g. 1000L, 2000L Sump"
+              value={tankDetails}
+              onChange={(e) => setTankDetails(e.target.value)}
+              placeholder="e.g. 1000L Overhead + 2000L Sump"
               className="w-full rounded-lg border px-3 py-2 text-sm"
             />
           </div>
@@ -423,6 +429,19 @@ export function ServiceFormModal({
             )}
           </div>
         )}
+
+        <div>
+          <label className="mb-1.5 block text-xs font-medium text-text-secondary">
+            Description
+          </label>
+          <input
+            type="text"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="Brief work summary"
+            className="w-full rounded-lg border px-3 py-2 text-sm"
+          />
+        </div>
 
         <div>
           <label className="mb-1.5 block text-xs font-medium text-text-secondary">Notes</label>

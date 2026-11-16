@@ -1,19 +1,19 @@
 import React, { useRef, useState } from 'react';
 import {
-  Archive,
   Download,
   ExternalLink,
   FileText,
   Image as ImageIcon,
   RefreshCw,
+  Trash2,
   Upload,
 } from 'lucide-react';
 import { apiFetch, ApiError } from '../../lib/api';
 import { formatBytes, formatDateTimeIst } from '../../lib/format';
 import {
-  ATTACHMENT_CATEGORIES,
-  type AttachmentCategory,
-  type AttachmentRecord,
+  FILE_CATEGORIES,
+  type FileCategory,
+  type ServiceFileRecord,
 } from '../../types/domain';
 import { Badge } from '../ui/Badge';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
@@ -22,47 +22,45 @@ import { Modal } from '../ui/Modal';
 interface FailedUpload {
   id: string;
   file: File;
-  category: AttachmentCategory;
+  category: FileCategory;
   error: string;
 }
 
 interface AttachmentsPanelProps {
   serviceId: string;
-  attachments: AttachmentRecord[];
+  files: ServiceFileRecord[];
   onChanged: () => void;
 }
 
 export function AttachmentsPanel({
   serviceId,
-  attachments,
+  files,
   onChanged,
 }: AttachmentsPanelProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [category, setCategory] = useState<AttachmentCategory>('Before-cleaning photos');
+  const [category, setCategory] = useState<FileCategory>('Before-cleaning photos');
   const [uploading, setUploading] = useState(false);
   const [failedUploads, setFailedUploads] = useState<FailedUpload[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [previewItem, setPreviewItem] = useState<{
-    record: AttachmentRecord;
+    record: ServiceFileRecord;
     url: string;
     downloadUrl: string;
   } | null>(null);
-  const [archiveTarget, setArchiveTarget] = useState<AttachmentRecord | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ServiceFileRecord | null>(null);
   const [loadingId, setLoadingId] = useState<string | null>(null);
 
-  const uploadSingleFile = async (file: File, cat: AttachmentCategory, retryId?: string) => {
+  const uploadSingleFile = async (file: File, cat: FileCategory, retryId?: string) => {
     const form = new FormData();
     form.append('file', file);
+    form.append('service_id', serviceId);
     form.append('category', cat);
 
     try {
-      await apiFetch<{ attachment: AttachmentRecord }>(
-        `/api/services/${serviceId}/attachments`,
-        {
-          method: 'POST',
-          body: form,
-        }
-      );
+      await apiFetch<{ file: ServiceFileRecord }>('/api/files/upload', {
+        method: 'POST',
+        body: form,
+      });
       if (retryId) {
         setFailedUploads((prev) => prev.filter((item) => item.id !== retryId));
       }
@@ -84,12 +82,12 @@ export function AttachmentsPanel({
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files ?? []);
-    if (files.length === 0) return;
+    const selected = Array.from(e.target.files ?? []);
+    if (selected.length === 0) return;
 
     setError(null);
     setUploading(true);
-    for (const file of files) {
+    for (const file of selected) {
       await uploadSingleFile(file, category);
     }
     setUploading(false);
@@ -98,12 +96,12 @@ export function AttachmentsPanel({
     }
   };
 
-  const openAttachment = async (record: AttachmentRecord, mode: 'preview' | 'download') => {
-    setLoadingId(record.attachment_id);
+  const openFile = async (record: ServiceFileRecord, mode: 'preview' | 'download') => {
+    setLoadingId(record.id);
     setError(null);
     try {
       const link = await apiFetch<{ url: string; download_url: string; expires_at: string }>(
-        `/api/attachments/${record.attachment_id}/access-link`
+        `/api/files/${record.id}`
       );
       if (mode === 'download') {
         window.open(link.download_url, '_blank', 'noopener,noreferrer');
@@ -113,23 +111,23 @@ export function AttachmentsPanel({
         window.open(link.url, '_blank', 'noopener,noreferrer');
       }
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Unable to generate temporary access link');
+      setError(err instanceof ApiError ? err.message : 'Unable to generate temporary signed link');
     } finally {
       setLoadingId(null);
     }
   };
 
-  const handleArchive = async () => {
-    if (!archiveTarget) return;
-    setLoadingId(archiveTarget.attachment_id);
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    setLoadingId(deleteTarget.id);
     try {
-      await apiFetch(`/api/attachments/${archiveTarget.attachment_id}/archive`, {
-        method: 'POST',
+      await apiFetch(`/api/files/${deleteTarget.id}`, {
+        method: 'DELETE',
       });
-      setArchiveTarget(null);
+      setDeleteTarget(null);
       onChanged();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to archive attachment');
+      setError(err instanceof ApiError ? err.message : 'Failed to delete file');
     } finally {
       setLoadingId(null);
     }
@@ -140,20 +138,20 @@ export function AttachmentsPanel({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="text-sm font-semibold text-text-primary">
-            Cloud Photos & Documents (Private R2)
+            Cloud Photos & Documents (Private Supabase Storage)
           </h3>
           <p className="text-xs text-text-secondary">
-            Stored privately in Cloudflare R2 with short-lived authorized access links
+            Stored privately in bucket <code>zero-base-files</code> with 5-minute signed URLs
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <select
             value={category}
-            onChange={(e) => setCategory(e.target.value as AttachmentCategory)}
+            onChange={(e) => setCategory(e.target.value as FileCategory)}
             aria-label="Upload category"
             className="rounded-lg border px-3 py-1.5 text-xs"
           >
-            {ATTACHMENT_CATEGORIES.map((cat) => (
+            {FILE_CATEGORIES.map((cat) => (
               <option key={cat} value={cat}>
                 {cat}
               </option>
@@ -212,18 +210,18 @@ export function AttachmentsPanel({
         </div>
       )}
 
-      {attachments.length === 0 ? (
+      {files.length === 0 ? (
         <div className="rounded-lg border border-dashed border-border py-8 text-center text-xs text-text-muted">
           No photos or bills uploaded yet for this service.
         </div>
       ) : (
         <div className="divide-y divide-border rounded-lg border border-border">
-          {attachments.map((att) => {
-            const isImage = att.mime_type.startsWith('image/');
-            const busy = loadingId === att.attachment_id;
+          {files.map((f) => {
+            const isImage = f.mime_type.startsWith('image/');
+            const busy = loadingId === f.id;
             return (
               <div
-                key={att.attachment_id}
+                key={f.id}
                 className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"
               >
                 <div className="flex min-w-0 items-center gap-3">
@@ -236,12 +234,12 @@ export function AttachmentsPanel({
                   </div>
                   <div className="min-w-0">
                     <p className="truncate text-sm font-medium text-text-primary">
-                      {att.original_filename}
+                      {f.file_name}
                     </p>
                     <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-text-muted">
-                      <Badge variant="accent">{att.category}</Badge>
-                      <span>{formatBytes(att.file_size)}</span>
-                      <span>• {formatDateTimeIst(att.uploaded_at)}</span>
+                      <Badge variant="accent">{f.category}</Badge>
+                      <span>{formatBytes(f.file_size)}</span>
+                      <span>• {formatDateTimeIst(f.uploaded_at)}</span>
                     </div>
                   </div>
                 </div>
@@ -250,7 +248,7 @@ export function AttachmentsPanel({
                   <button
                     type="button"
                     disabled={busy}
-                    onClick={() => void openAttachment(att, 'preview')}
+                    onClick={() => void openFile(f, 'preview')}
                     className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-text-primary hover:bg-bg disabled:opacity-50"
                   >
                     <ExternalLink className="h-3.5 w-3.5" />
@@ -259,7 +257,7 @@ export function AttachmentsPanel({
                   <button
                     type="button"
                     disabled={busy}
-                    onClick={() => void openAttachment(att, 'download')}
+                    onClick={() => void openFile(f, 'download')}
                     className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-text-primary hover:bg-bg disabled:opacity-50"
                   >
                     <Download className="h-3.5 w-3.5" />
@@ -268,11 +266,11 @@ export function AttachmentsPanel({
                   <button
                     type="button"
                     disabled={busy}
-                    onClick={() => setArchiveTarget(att)}
-                    aria-label={`Archive ${att.original_filename}`}
+                    onClick={() => setDeleteTarget(f)}
+                    aria-label={`Delete ${f.file_name}`}
                     className="rounded-md p-1.5 text-text-muted hover:bg-error-soft hover:text-error"
                   >
-                    <Archive className="h-3.5 w-3.5" />
+                    <Trash2 className="h-3.5 w-3.5" />
                   </button>
                 </div>
               </div>
@@ -284,7 +282,7 @@ export function AttachmentsPanel({
       <Modal
         open={Boolean(previewItem)}
         onClose={() => setPreviewItem(null)}
-        title={previewItem?.record.original_filename ?? 'Attachment Preview'}
+        title={previewItem?.record.file_name ?? 'File Preview'}
         subtitle={previewItem?.record.category}
         maxWidthClass="max-w-3xl"
       >
@@ -293,7 +291,7 @@ export function AttachmentsPanel({
             <div className="overflow-hidden rounded-lg border border-border bg-bg text-center">
               <img
                 src={previewItem.url}
-                alt={previewItem.record.original_filename}
+                alt={previewItem.record.file_name}
                 className="mx-auto max-h-[65vh] w-auto object-contain"
               />
             </div>
@@ -313,14 +311,14 @@ export function AttachmentsPanel({
       </Modal>
 
       <ConfirmDialog
-        open={Boolean(archiveTarget)}
-        onClose={() => setArchiveTarget(null)}
-        onConfirm={() => void handleArchive()}
-        title="Archive Attachment"
-        message={`Archive "${archiveTarget?.original_filename}"? The file metadata will be hidden from active views and retained in audit/backup history.`}
-        confirmLabel="Archive File"
+        open={Boolean(deleteTarget)}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => void handleDelete()}
+        title="Delete File"
+        message={`Permanently delete "${deleteTarget?.file_name}" from Supabase Storage (zero-base-files) and remove its metadata record?`}
+        confirmLabel="Delete File"
         danger
-        loading={Boolean(archiveTarget && loadingId === archiveTarget.attachment_id)}
+        loading={Boolean(deleteTarget && loadingId === deleteTarget.id)}
       />
     </div>
   );

@@ -38,12 +38,10 @@ export function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Quick customer search
   const [quickQuery, setQuickQuery] = useState('');
   const [quickResults, setQuickResults] = useState<Customer[]>([]);
   const [searching, setSearching] = useState(false);
 
-  // Modals
   const [customerModalOpen, setCustomerModalOpen] = useState(false);
   const [serviceModalOpen, setServiceModalOpen] = useState(false);
 
@@ -78,7 +76,7 @@ export function DashboardPage() {
         );
         setQuickResults(res.customers);
       } catch {
-        // Ignore transient errors in quick search
+        // Ignore transient search errors
       } finally {
         setSearching(false);
       }
@@ -110,7 +108,6 @@ export function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header + Quick Actions */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-xl font-semibold tracking-tight text-text-primary">Dashboard</h1>
@@ -147,7 +144,7 @@ export function DashboardPage() {
             type="text"
             value={quickQuery}
             onChange={(e) => setQuickQuery(e.target.value)}
-            placeholder="Quick customer search by name, phone number, address, locality, or customer ID..."
+            placeholder="Quick customer search by name, phone, customer code, address, or area..."
             className="w-full border-0 bg-transparent p-0 text-sm focus:ring-0"
           />
           {searching && <span className="text-[11px] text-text-muted">Searching...</span>}
@@ -157,19 +154,21 @@ export function DashboardPage() {
           <div className="absolute left-0 right-0 z-20 mt-1.5 overflow-hidden rounded-xl border border-border bg-elevated shadow-modal divide-y divide-border">
             {quickResults.map((c) => (
               <button
-                key={c.customer_id}
+                key={c.id}
                 type="button"
-                onClick={() => navigate(`/customers/${c.customer_id}`)}
+                onClick={() => navigate(`/customers/${c.id}`)}
                 className="flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left hover:bg-bg"
               >
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-text-primary">{c.full_name}</p>
+                  <p className="truncate text-sm font-medium text-text-primary">
+                    {c.full_name} <span className="font-mono text-xs text-text-muted">({c.customer_code})</span>
+                  </p>
                   <p className="truncate text-xs text-text-secondary">
-                    {c.address} {c.locality ? `• ${c.locality}` : ''}
+                    {c.address} {c.area ? `• ${c.area}` : ''}
                   </p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                  <span className="font-mono text-xs text-text-secondary">{c.primary_phone}</span>
+                  <span className="font-mono text-xs text-text-secondary">{c.phone_number}</span>
                   <ArrowRight className="h-3.5 w-3.5 text-text-muted" />
                 </div>
               </button>
@@ -180,7 +179,6 @@ export function DashboardPage() {
 
       {error && <ErrorBanner message={error} onRetry={() => void loadDashboard()} />}
 
-      {/* Metrics Grid */}
       {loading ? (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
           {Array.from({ length: 8 }).map((_, i) => (
@@ -211,9 +209,7 @@ export function DashboardPage() {
         </div>
       )}
 
-      {/* Recent Services + Upcoming Reminders */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        {/* Recent Service Records */}
         <section className="zb-card overflow-hidden">
           <div className="flex items-center justify-between border-b border-border px-5 py-3.5">
             <div className="flex items-center gap-2">
@@ -241,8 +237,8 @@ export function DashboardPage() {
             <div className="divide-y divide-border">
               {data.recent_services.map((srv) => (
                 <Link
-                  key={srv.service_id}
-                  to={`/services/${srv.service_id}`}
+                  key={srv.id}
+                  to={`/services/${srv.id}`}
                   className="flex items-center justify-between gap-3 px-5 py-3 transition hover:bg-bg"
                 >
                   <div className="min-w-0">
@@ -265,7 +261,6 @@ export function DashboardPage() {
           )}
         </section>
 
-        {/* Upcoming Reminders */}
         <section className="zb-card overflow-hidden">
           <div className="flex items-center justify-between border-b border-border px-5 py-3.5">
             <div className="flex items-center gap-2">
@@ -293,7 +288,7 @@ export function DashboardPage() {
             <div className="divide-y divide-border">
               {data.upcoming_reminders.map((rem) => (
                 <Link
-                  key={rem.reminder_id}
+                  key={rem.id}
                   to="/reminders"
                   className="flex items-center justify-between gap-3 px-5 py-3 transition hover:bg-bg"
                 >
@@ -302,7 +297,7 @@ export function DashboardPage() {
                       {rem.customers?.full_name ?? 'Customer'}
                     </p>
                     <p className="mt-0.5 truncate text-xs text-text-secondary">
-                      Due {formatServiceDate(rem.due_date)} • {rem.customers?.primary_phone}
+                      Due {formatServiceDate(rem.due_date)} • {rem.customers?.phone_number}
                     </p>
                   </div>
                   <ReminderCategoryBadge category={rem.category} />
@@ -318,7 +313,7 @@ export function DashboardPage() {
         onClose={() => setCustomerModalOpen(false)}
         onSaved={(c) => {
           void loadDashboard();
-          navigate(`/customers/${c.customer_id}`);
+          navigate(`/customers/${c.id}`);
         }}
       />
 

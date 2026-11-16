@@ -19,17 +19,17 @@ import { useAuth } from '../context/AuthContext';
 import { apiFetch, ApiError } from '../lib/api';
 import { formatCurrency, formatServiceDate } from '../lib/format';
 import type {
-  AttachmentRecord,
   PaymentMethod,
   PaymentRecord,
   ReminderRecord,
+  ServiceFileRecord,
   ServiceRecord,
 } from '../types/domain';
 
 interface ServiceDetailResponse {
   service: ServiceRecord;
   payments: PaymentRecord[];
-  attachments: AttachmentRecord[];
+  files: ServiceFileRecord[];
   reminders: ReminderRecord[];
 }
 
@@ -47,7 +47,6 @@ export function ServiceDetailPage() {
   const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
   const [archiving, setArchiving] = useState(false);
 
-  // Payment correction modal (preserves audit trail, never silently deletes)
   const [correctTarget, setCorrectTarget] = useState<PaymentRecord | null>(null);
   const [correctReason, setCorrectReason] = useState('');
   const [includeReplacement, setIncludeReplacement] = useState(true);
@@ -80,8 +79,8 @@ export function ServiceDetailPage() {
     setArchiving(true);
     try {
       const endpoint = data.service.archived_at
-        ? `/api/services/${data.service.service_id}/restore`
-        : `/api/services/${data.service.service_id}/archive`;
+        ? `/api/services/${data.service.id}/restore`
+        : `/api/services/${data.service.id}/archive`;
       await apiFetch(endpoint, { method: 'POST' });
       setArchiveConfirmOpen(false);
       void loadDetail();
@@ -99,7 +98,7 @@ export function ServiceDetailPage() {
     setRepAmount(String(payment.amount));
     setRepMethod(payment.payment_method);
     setRepDate(payment.payment_date);
-    setRepRef(payment.transaction_reference ?? '');
+    setRepRef(payment.reference_number ?? '');
   };
 
   const handleCorrectSubmit = async (e: React.FormEvent) => {
@@ -108,7 +107,7 @@ export function ServiceDetailPage() {
     setCorrectSubmitting(true);
     setError(null);
     try {
-      await apiFetch(`/api/payments/${correctTarget.payment_id}/correct`, {
+      await apiFetch(`/api/payments/${correctTarget.id}/correct`, {
         method: 'POST',
         body: JSON.stringify({
           reason: correctReason.trim(),
@@ -117,7 +116,7 @@ export function ServiceDetailPage() {
                 amount: Number(repAmount),
                 payment_type: correctTarget.payment_type,
                 payment_method: repMethod,
-                transaction_reference: repRef.trim() || null,
+                reference_number: repRef.trim() || null,
                 payment_date: repDate,
               }
             : null,
@@ -155,8 +154,8 @@ export function ServiceDetailPage() {
 
   if (!data) return null;
 
-  const { service, payments, attachments } = data;
-  const outstanding = Math.max(0, Number(service.total_amount) - Number(service.amount_paid));
+  const { service, payments, files } = data;
+  const outstanding = Number(service.balance_amount ?? Math.max(0, Number(service.total_amount) - Number(service.amount_paid)));
 
   return (
     <div className="space-y-6">
@@ -185,9 +184,9 @@ export function ServiceDetailPage() {
                 to={`/customers/${service.customer_id}`}
                 className="font-medium text-accent hover:underline"
               >
-                {service.customers.full_name}
+                {service.customers.full_name} ({service.customers.customer_code})
               </Link>{' '}
-              ({service.customers.primary_phone})
+              • {service.customers.phone_number}
             </p>
           )}
         </div>
@@ -231,7 +230,7 @@ export function ServiceDetailPage() {
         </div>
       </div>
 
-      {/* Summary Cards */}
+      {/* Financial Summary */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
         <div className="zb-card p-4">
           <p className="text-[11px] uppercase tracking-wider text-text-muted">Price</p>
@@ -252,7 +251,7 @@ export function ServiceDetailPage() {
           </p>
         </div>
         <div className="zb-card p-4">
-          <p className="text-[11px] uppercase tracking-wider text-text-muted">Outstanding</p>
+          <p className="text-[11px] uppercase tracking-wider text-text-muted">Balance</p>
           <p className={`mt-1 text-lg font-semibold ${outstanding > 0 ? 'text-error' : ''}`}>
             {formatCurrency(outstanding, sym)}
           </p>
@@ -262,16 +261,18 @@ export function ServiceDetailPage() {
       {/* Metadata Details */}
       <div className="zb-card p-5 grid grid-cols-1 gap-4 sm:grid-cols-3 text-sm">
         <div>
-          <p className="text-xs text-text-muted">Tank Capacity</p>
-          <p className="mt-0.5 font-medium">{service.tank_capacity || '—'}</p>
+          <p className="text-xs text-text-muted">Tank Details</p>
+          <p className="mt-0.5 font-medium">{service.tank_details || '—'}</p>
         </div>
         <div>
           <p className="text-xs text-text-muted">Next Due Date</p>
           <p className="mt-0.5 font-medium">{formatServiceDate(service.next_due_date)}</p>
         </div>
         <div>
-          <p className="text-xs text-text-muted">Service Notes</p>
-          <p className="mt-0.5 text-text-secondary">{service.notes || '—'}</p>
+          <p className="text-xs text-text-muted">Description / Notes</p>
+          <p className="mt-0.5 text-text-secondary">
+            {[service.description, service.notes].filter(Boolean).join(' — ') || '—'}
+          </p>
         </div>
       </div>
 
@@ -318,7 +319,7 @@ export function ServiceDetailPage() {
               <tbody className="divide-y divide-border">
                 {payments.map((p) => (
                   <tr
-                    key={p.payment_id}
+                    key={p.id}
                     className={p.archived_at ? 'opacity-60 bg-bg/40' : ''}
                   >
                     <td className="px-4 py-3">{formatServiceDate(p.payment_date)}</td>
@@ -329,7 +330,7 @@ export function ServiceDetailPage() {
                     </td>
                     <td className="px-4 py-3">{p.payment_method}</td>
                     <td className="px-4 py-3 font-mono text-xs text-text-secondary">
-                      {p.transaction_reference || '—'}
+                      {p.reference_number || '—'}
                     </td>
                     <td className="px-4 py-3 font-semibold">
                       {p.payment_type === 'refund' ? '-' : ''}
@@ -364,10 +365,10 @@ export function ServiceDetailPage() {
         )}
       </div>
 
-      {/* Private R2 Attachments */}
+      {/* Private Supabase Storage Files */}
       <AttachmentsPanel
-        serviceId={service.service_id}
-        attachments={attachments}
+        serviceId={service.id}
+        files={files}
         onChanged={() => void loadDetail()}
       />
 
@@ -381,7 +382,7 @@ export function ServiceDetailPage() {
       <PaymentFormModal
         open={paymentModalOpen}
         onClose={() => setPaymentModalOpen(false)}
-        serviceId={service.service_id}
+        serviceId={service.id}
         outstandingAmount={outstanding}
         amountPaid={Number(service.amount_paid)}
         currencySymbol={sym}
@@ -396,7 +397,7 @@ export function ServiceDetailPage() {
         message={
           service.archived_at
             ? 'Restore this service record to active history and reports?'
-            : 'Archive this service record? It will be hidden from active metrics while keeping payments and attachments intact for audit.'
+            : 'Archive this service record? It will be hidden from active metrics while keeping payments and files intact for audit.'
         }
         confirmLabel={service.archived_at ? 'Restore Service' : 'Archive Service'}
         danger={!service.archived_at}
@@ -479,7 +480,7 @@ export function ServiceDetailPage() {
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-text-secondary">
-                  Reference
+                  Reference Number
                 </label>
                 <input
                   type="text"

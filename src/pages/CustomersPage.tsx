@@ -57,7 +57,7 @@ export function CustomersPage() {
         <div>
           <h1 className="text-xl font-semibold tracking-tight text-text-primary">Customers</h1>
           <p className="text-xs text-text-secondary">
-            Search by full/partial name, primary or secondary phone, address, locality, or customer ID
+            Search by full/partial name, phone, alternate phone, customer code, address, or area
           </p>
         </div>
 
@@ -78,7 +78,7 @@ export function CustomersPage() {
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search name, phone (e.g. 98765), address, locality, or UUID..."
+            placeholder="Search name, phone (e.g. 98765), ZB-00001, address, or area..."
             className="w-full rounded-lg border pl-9 pr-3 py-1.5 text-sm"
           />
         </div>
@@ -133,10 +133,10 @@ export function CustomersPage() {
               </thead>
               <tbody className="divide-y divide-border">
                 {customers.map((c) => (
-                  <tr key={c.customer_id} className="transition hover:bg-bg/70">
+                  <tr key={c.id} className="transition hover:bg-bg/70">
                     <td className="px-4 py-3">
                       <Link
-                        to={`/customers/${c.customer_id}`}
+                        to={`/customers/${c.id}`}
                         className="font-semibold text-text-primary hover:text-accent"
                       >
                         {c.full_name}
@@ -147,16 +147,16 @@ export function CustomersPage() {
                         </Badge>
                       )}
                       <p className="mt-0.5 font-mono text-[11px] text-text-muted">
-                        {c.customer_id}
+                        {c.customer_code}
                       </p>
                     </td>
                     <td className="px-4 py-3 font-mono text-xs text-text-primary">
                       <div className="flex items-center gap-1.5">
                         <Phone className="h-3.5 w-3.5 text-text-muted" />
-                        <span>{c.primary_phone}</span>
+                        <span>{c.phone_number}</span>
                       </div>
-                      {c.secondary_phone && (
-                        <p className="mt-0.5 pl-5 text-text-muted">{c.secondary_phone}</p>
+                      {c.alternate_phone && (
+                        <p className="mt-0.5 pl-5 text-text-muted">{c.alternate_phone}</p>
                       )}
                     </td>
                     <td className="px-4 py-3 text-xs text-text-secondary">
@@ -164,7 +164,7 @@ export function CustomersPage() {
                         <MapPin className="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-muted" />
                         <div>
                           <p className="text-text-primary">{c.address}</p>
-                          {c.locality && <p className="text-text-muted">{c.locality}</p>}
+                          {c.area && <p className="text-text-muted">{c.area}</p>}
                         </div>
                       </div>
                     </td>
@@ -172,7 +172,7 @@ export function CustomersPage() {
                       {c.archived_at ? (
                         <button
                           type="button"
-                          onClick={() => void handleRestore(c.customer_id)}
+                          onClick={() => void handleRestore(c.id)}
                           className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-text-primary hover:bg-bg"
                         >
                           <ArchiveRestore className="h-3.5 w-3.5" />
@@ -180,7 +180,7 @@ export function CustomersPage() {
                         </button>
                       ) : (
                         <Link
-                          to={`/customers/${c.customer_id}`}
+                          to={`/customers/${c.id}`}
                           className="inline-flex items-center rounded-md border border-border px-2.5 py-1 text-xs font-medium text-text-primary hover:bg-bg"
                         >
                           Open Profile
@@ -199,7 +199,7 @@ export function CustomersPage() {
         open={modalOpen}
         onClose={() => setModalOpen(false)}
         onSaved={(c) => {
-          navigate(`/customers/${c.customer_id}`);
+          navigate(`/customers/${c.id}`);
         }}
       />
     </div>

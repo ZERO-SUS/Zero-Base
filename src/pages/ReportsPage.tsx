@@ -106,7 +106,6 @@ export function ReportsPage() {
         </button>
       </div>
 
-      {/* Period Selector */}
       <div className="zb-card p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-wrap gap-1.5">
           {(['daily', 'monthly', 'yearly', 'custom'] as Period[]).map((p) => (
@@ -217,7 +216,6 @@ export function ReportsPage() {
             </div>
           </div>
 
-          {/* Service Type Breakdown */}
           <section className="zb-card p-5 space-y-4">
             <div className="flex items-center gap-2">
               <BarChart3 className="h-4 w-4 text-accent" />
@@ -257,7 +255,6 @@ export function ReportsPage() {
             )}
           </section>
 
-          {/* Detailed Services in Period */}
           <section className="zb-card overflow-hidden">
             <div className="border-b border-border px-5 py-3.5">
               <h2 className="text-sm font-semibold text-text-primary">
@@ -286,10 +283,10 @@ export function ReportsPage() {
                   </thead>
                   <tbody className="divide-y divide-border">
                     {data.services.map((srv) => (
-                      <tr key={srv.service_id} className="hover:bg-bg/70">
+                      <tr key={srv.id} className="hover:bg-bg/70">
                         <td className="px-4 py-2.5 text-xs">
                           <Link
-                            to={`/services/${srv.service_id}`}
+                            to={`/services/${srv.id}`}
                             className="font-medium text-accent hover:underline"
                           >
                             {formatServiceDate(srv.service_date)}

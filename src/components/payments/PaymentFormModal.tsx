@@ -68,7 +68,7 @@ export function PaymentFormModal({
           amount: numAmount,
           payment_type: paymentType,
           payment_method: method,
-          transaction_reference: txRef.trim() || null,
+          reference_number: txRef.trim() || null,
           payment_date: paymentDate,
           notes: notes.trim() || null,
           idempotency_key: idempotencyKey,
@@ -160,7 +160,7 @@ export function PaymentFormModal({
 
           <div>
             <label className="mb-1.5 block text-xs font-medium text-text-secondary">
-              Transaction Reference
+              Reference Number
             </label>
             <input
               type="text"

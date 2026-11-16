@@ -22,14 +22,12 @@ export function ServiceHistoryPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Filters
   const [search, setSearch] = useState('');
   const [yearFilter, setYearFilter] = useState('');
   const [monthFilter, setMonthFilter] = useState('');
   const [serviceTypeFilter, setServiceTypeFilter] = useState('');
   const [paymentStatusFilter, setPaymentStatusFilter] = useState('');
 
-  // Collapse state: default expand newest year & months
   const [collapsedYears, setCollapsedYears] = useState<Record<number, boolean>>({});
   const [collapsedMonths, setCollapsedMonths] = useState<Record<string, boolean>>({});
   const [serviceModalOpen, setServiceModalOpen] = useState(false);
@@ -102,7 +100,7 @@ export function ServiceHistoryPage() {
             Year-Wise Service History
           </h1>
           <p className="text-xs text-text-secondary">
-            Organized chronologically by actual cleaning date (`service_date`) — newest first
+            Organized chronologically by actual service date (`service_date`) — newest first
           </p>
         </div>
 
@@ -140,7 +138,7 @@ export function ServiceHistoryPage() {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search customer name, phone, address..."
+            placeholder="Search customer name, phone, code, address..."
             className="w-full rounded-lg border pl-9 pr-3 py-1.5 text-sm"
           />
         </div>
@@ -294,8 +292,8 @@ export function ServiceHistoryPage() {
                             <div className="divide-y divide-border bg-surface">
                               {monthGroup.records.map((srv) => (
                                 <Link
-                                  key={srv.service_id}
-                                  to={`/services/${srv.service_id}`}
+                                  key={srv.id}
+                                  to={`/services/${srv.id}`}
                                   className="flex flex-col gap-1.5 px-8 py-3 transition hover:bg-bg sm:flex-row sm:items-center sm:justify-between"
                                 >
                                   <div className="min-w-0">
@@ -314,10 +312,10 @@ export function ServiceHistoryPage() {
                                     </div>
                                     <p className="mt-0.5 text-xs text-text-secondary">
                                       {srv.service_type}
-                                      {srv.tank_capacity ? ` • ${srv.tank_capacity}` : ''}
-                                      {srv.customers?.locality ? ` • ${srv.customers.locality}` : ''}
-                                      {srv.customers?.primary_phone
-                                        ? ` • ${srv.customers.primary_phone}`
+                                      {srv.tank_details ? ` • ${srv.tank_details}` : ''}
+                                      {srv.customers?.area ? ` • ${srv.customers.area}` : ''}
+                                      {srv.customers?.phone_number
+                                        ? ` • ${srv.customers.phone_number}`
                                         : ''}
                                     </p>
                                   </div>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { CreditCard } from 'lucide-react';
+import { CreditCard, Search } from 'lucide-react';
 import { PaymentFormModal } from '../components/payments/PaymentFormModal';
 import { Badge, PaymentStatusBadge } from '../components/ui/Badge';
 import { EmptyState, ErrorBanner, SkeletonCard } from '../components/ui/Feedback';
@@ -22,6 +22,7 @@ export function PaymentsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const [search, setSearch] = useState('');
   const [methodFilter, setMethodFilter] = useState('');
   const [typeFilter, setTypeFilter] = useState('');
   const [payModalService, setPayModalService] = useState<ServiceRecord | null>(null);
@@ -30,6 +31,7 @@ export function PaymentsPage() {
     setLoading(true);
     setError(null);
     const params = new URLSearchParams();
+    if (search.trim()) params.set('q', search.trim());
     if (methodFilter) params.set('payment_method', methodFilter);
     if (typeFilter) params.set('payment_type', typeFilter);
 
@@ -41,10 +43,13 @@ export function PaymentsPage() {
     } finally {
       setLoading(false);
     }
-  }, [methodFilter, typeFilter]);
+  }, [search, methodFilter, typeFilter]);
 
   useEffect(() => {
-    void loadPayments();
+    const timer = window.setTimeout(() => {
+      void loadPayments();
+    }, 200);
+    return () => window.clearTimeout(timer);
   }, [loadPayments]);
 
   return (
@@ -58,7 +63,6 @@ export function PaymentsPage() {
 
       {error && <ErrorBanner message={error} onRetry={() => void loadPayments()} />}
 
-      {/* Outstanding Services */}
       <section className="zb-card overflow-hidden">
         <div className="border-b border-border px-5 py-3.5">
           <h2 className="text-sm font-semibold text-text-primary">
@@ -77,16 +81,16 @@ export function PaymentsPage() {
         ) : (
           <div className="divide-y divide-border">
             {data.outstanding_services.map((srv) => {
-              const due = Math.max(0, Number(srv.total_amount) - Number(srv.amount_paid));
+              const due = Number(srv.balance_amount ?? Math.max(0, Number(srv.total_amount) - Number(srv.amount_paid)));
               return (
                 <div
-                  key={srv.service_id}
+                  key={srv.id}
                   className="flex flex-col gap-2 px-5 py-3 sm:flex-row sm:items-center sm:justify-between"
                 >
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
                       <Link
-                        to={`/services/${srv.service_id}`}
+                        to={`/services/${srv.id}`}
                         className="text-sm font-semibold text-text-primary hover:text-accent"
                       >
                         {srv.customers?.full_name}
@@ -119,11 +123,20 @@ export function PaymentsPage() {
         )}
       </section>
 
-      {/* Complete Payments Ledger */}
       <section className="zb-card overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-3.5">
           <h2 className="text-sm font-semibold text-text-primary">Payment Ledger</h2>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-text-muted" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search customer, phone, reference..."
+                className="w-52 rounded-lg border pl-8 pr-2.5 py-1 text-xs"
+              />
+            </div>
             <select
               value={methodFilter}
               onChange={(e) => setMethodFilter(e.target.value)}
@@ -175,7 +188,7 @@ export function PaymentsPage() {
               </thead>
               <tbody className="divide-y divide-border">
                 {data.payments.map((p) => (
-                  <tr key={p.payment_id} className="hover:bg-bg/70">
+                  <tr key={p.id} className="hover:bg-bg/70">
                     <td className="px-4 py-3 text-xs text-text-secondary">
                       {formatServiceDate(p.payment_date)}
                     </td>
@@ -190,7 +203,7 @@ export function PaymentsPage() {
                     </td>
                     <td className="px-4 py-3">{p.payment_method}</td>
                     <td className="px-4 py-3 font-mono text-xs text-text-secondary">
-                      {p.transaction_reference || '—'}
+                      {p.reference_number || '—'}
                     </td>
                     <td className="px-4 py-3 capitalize">
                       <Badge variant={p.payment_type === 'refund' ? 'warning' : 'success'}>
@@ -213,10 +226,10 @@ export function PaymentsPage() {
         <PaymentFormModal
           open={Boolean(payModalService)}
           onClose={() => setPayModalService(null)}
-          serviceId={payModalService.service_id}
-          outstandingAmount={Math.max(
-            0,
-            Number(payModalService.total_amount) - Number(payModalService.amount_paid)
+          serviceId={payModalService.id}
+          outstandingAmount={Number(
+            payModalService.balance_amount ??
+              Math.max(0, Number(payModalService.total_amount) - Number(payModalService.amount_paid))
           )}
           amountPaid={Number(payModalService.amount_paid)}
           currencySymbol={sym}

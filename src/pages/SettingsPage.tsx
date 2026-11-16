@@ -27,10 +27,10 @@ import {
 import type { AuditLogEntry, BusinessSettings } from '../types/domain';
 
 interface OrphanReport {
-  total_db_attachments: number;
-  total_r2_objects: number;
-  r2_only_orphans: Array<{ key: string; size: number; uploaded: string }>;
-  missing_in_r2: Array<{ attachment_id: string; storage_key: string; original_filename: string }>;
+  total_db_files: number;
+  total_storage_objects: number;
+  storage_only_orphans: Array<{ path: string; size: number; updated_at: string }>;
+  missing_in_storage: Array<{ id: string; storage_path: string; file_name: string }>;
 }
 
 export function SettingsPage() {
@@ -41,7 +41,6 @@ export function SettingsPage() {
   const [hexError, setHexError] = useState<string | null>(null);
   const [themeSavedMsg, setThemeSavedMsg] = useState<string | null>(null);
 
-  // Business settings form
   const [appName, setAppName] = useState(settings.app_name);
   const [serviceTypes, setServiceTypes] = useState<string[]>(settings.service_types);
   const [newServiceType, setNewServiceType] = useState('');
@@ -49,14 +48,12 @@ export function SettingsPage() {
   const [savingSettings, setSavingSettings] = useState(false);
   const [settingsMsg, setSettingsMsg] = useState<string | null>(null);
 
-  // Storage & Backup
   const [orphanReport, setOrphanReport] = useState<OrphanReport | null>(null);
   const [scanningOrphans, setScanningOrphans] = useState(false);
   const [confirmCleanupOpen, setConfirmCleanupOpen] = useState(false);
   const [cleaningOrphans, setCleaningOrphans] = useState(false);
   const [exportingBackup, setExportingBackup] = useState(false);
 
-  // Audit logs
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
   const [loadingLogs, setLoadingLogs] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -154,30 +151,30 @@ export function SettingsPage() {
     setScanningOrphans(true);
     setError(null);
     try {
-      const res = await apiFetch<OrphanReport>('/api/attachments/orphans');
+      const res = await apiFetch<OrphanReport>('/api/files/orphans');
       setOrphanReport(res);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to scan R2 storage.');
+      setError(err instanceof ApiError ? err.message : 'Failed to scan Supabase Storage.');
     } finally {
       setScanningOrphans(false);
     }
   };
 
   const handleCleanOrphans = async () => {
-    if (!orphanReport || orphanReport.r2_only_orphans.length === 0) return;
+    if (!orphanReport || orphanReport.storage_only_orphans.length === 0) return;
     setCleaningOrphans(true);
     try {
-      await apiFetch('/api/attachments/orphans', {
+      await apiFetch('/api/files/orphans', {
         method: 'DELETE',
         body: JSON.stringify({
-          keys: orphanReport.r2_only_orphans.map((o) => o.key),
+          paths: orphanReport.storage_only_orphans.map((o) => o.path),
         }),
       });
       setConfirmCleanupOpen(false);
       await handleScanOrphans();
       await loadAuditLogs();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to remove orphaned R2 objects.');
+      setError(err instanceof ApiError ? err.message : 'Failed to remove orphaned storage objects.');
     } finally {
       setCleaningOrphans(false);
     }
@@ -212,13 +209,13 @@ export function SettingsPage() {
       <div>
         <h1 className="text-xl font-semibold tracking-tight text-text-primary">Settings</h1>
         <p className="text-xs text-text-secondary">
-          Theme customization, configurable business rules, R2 storage health, backups, and audit logs
+          Theme customization, configurable business rules, Supabase Storage health, backups, and audit logs
         </p>
       </div>
 
       {error && <ErrorBanner message={error} />}
 
-      {/* 1. Complete Theme System */}
+      {/* 1. Theme System */}
       <section className="zb-card p-5 space-y-5">
         <div className="flex items-center gap-2">
           <Palette className="h-4 w-4 text-accent" />
@@ -227,7 +224,6 @@ export function SettingsPage() {
           </h2>
         </div>
 
-        {/* Theme Mode */}
         <div>
           <label className="mb-2 block text-xs font-medium text-text-secondary">
             Theme Mode
@@ -259,7 +255,6 @@ export function SettingsPage() {
           </div>
         </div>
 
-        {/* Preset Accent Palettes */}
         <div>
           <label className="mb-2 block text-xs font-medium text-text-secondary">
             Preset Accent Palettes
@@ -291,7 +286,6 @@ export function SettingsPage() {
           </div>
         </div>
 
-        {/* Custom Colour Picker + HEX Input */}
         <form onSubmit={handleHexApply} className="space-y-2">
           <label className="block text-xs font-medium text-text-secondary">
             Custom Accent Colour (Picker or HEX)
@@ -327,7 +321,7 @@ export function SettingsPage() {
         </form>
       </section>
 
-      {/* 2. Business Configuration (Admin) */}
+      {/* 2. Business Configuration */}
       {user?.role === 'admin' && (
         <section className="zb-card p-5 space-y-4">
           <h2 className="text-sm font-semibold text-text-primary">Business Configuration</h2>
@@ -425,14 +419,14 @@ export function SettingsPage() {
         </section>
       )}
 
-      {/* 3. Storage & Backup Health */}
+      {/* 3. Supabase Storage & Backup Health */}
       {user?.role === 'admin' && (
         <section className="zb-card p-5 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <HardDrive className="h-4 w-4 text-accent" />
               <h2 className="text-sm font-semibold text-text-primary">
-                R2 Storage Integrity & Data Backup
+                Supabase Storage Integrity & Data Backup
               </h2>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -442,7 +436,7 @@ export function SettingsPage() {
                 onClick={() => void handleScanOrphans()}
                 className="rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-medium hover:bg-bg disabled:opacity-50"
               >
-                {scanningOrphans ? 'Scanning R2...' : 'Scan R2 Orphans'}
+                {scanningOrphans ? 'Scanning Storage...' : 'Scan Storage Orphans'}
               </button>
               <button
                 type="button"
@@ -460,29 +454,37 @@ export function SettingsPage() {
             <div className="rounded-xl border border-border bg-bg p-4 space-y-3 text-xs">
               <div className="flex flex-wrap gap-4">
                 <span>
-                  DB Attachment Records: <strong>{orphanReport.total_db_attachments}</strong>
+                  DB File Records: <strong>{orphanReport.total_db_files}</strong>
                 </span>
                 <span>
-                  R2 Objects: <strong>{orphanReport.total_r2_objects}</strong>
+                  Storage Objects: <strong>{orphanReport.total_storage_objects}</strong>
                 </span>
                 <span>
-                  R2-only Orphans:{' '}
-                  <strong className={orphanReport.r2_only_orphans.length > 0 ? 'text-warning' : 'text-success'}>
-                    {orphanReport.r2_only_orphans.length}
+                  Storage-only Orphans:{' '}
+                  <strong
+                    className={
+                      orphanReport.storage_only_orphans.length > 0 ? 'text-warning' : 'text-success'
+                    }
+                  >
+                    {orphanReport.storage_only_orphans.length}
                   </strong>
                 </span>
                 <span>
-                  Missing in R2:{' '}
-                  <strong className={orphanReport.missing_in_r2.length > 0 ? 'text-error' : 'text-success'}>
-                    {orphanReport.missing_in_r2.length}
+                  Missing in Storage:{' '}
+                  <strong
+                    className={
+                      orphanReport.missing_in_storage.length > 0 ? 'text-error' : 'text-success'
+                    }
+                  >
+                    {orphanReport.missing_in_storage.length}
                   </strong>
                 </span>
               </div>
 
-              {orphanReport.r2_only_orphans.length > 0 && (
+              {orphanReport.storage_only_orphans.length > 0 && (
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="font-semibold text-warning">Unreferenced R2 Keys</span>
+                    <span className="font-semibold text-warning">Unreferenced Storage Paths</span>
                     <button
                       type="button"
                       onClick={() => setConfirmCleanupOpen(true)}
@@ -492,9 +494,9 @@ export function SettingsPage() {
                     </button>
                   </div>
                   <div className="max-h-36 overflow-y-auto space-y-1 font-mono text-[11px]">
-                    {orphanReport.r2_only_orphans.map((o) => (
-                      <div key={o.key} className="flex justify-between">
-                        <span className="truncate">{o.key}</span>
+                    {orphanReport.storage_only_orphans.map((o) => (
+                      <div key={o.path} className="flex justify-between">
+                        <span className="truncate">{o.path}</span>
                         <span className="text-text-muted">{formatBytes(o.size)}</span>
                       </div>
                     ))}
@@ -548,7 +550,7 @@ export function SettingsPage() {
                       <td className="px-4 py-2">
                         <Badge
                           variant={
-                            log.action === 'ARCHIVE'
+                            log.action === 'ARCHIVE' || log.action === 'DELETE_FILE'
                               ? 'warning'
                               : log.action === 'INSERT'
                                 ? 'success'
@@ -575,8 +577,8 @@ export function SettingsPage() {
         open={confirmCleanupOpen}
         onClose={() => setConfirmCleanupOpen(false)}
         onConfirm={() => void handleCleanOrphans()}
-        title="Delete R2-Only Orphaned Files"
-        message="This permanently removes only files in R2 that have NO matching row in the PostgreSQL attachments table. Active and archived attachment records are untouched."
+        title="Delete Storage-Only Orphaned Files"
+        message="This permanently removes only files in Supabase Storage bucket zero-base-files that have NO matching row in the PostgreSQL service_files table."
         confirmLabel="Delete Orphans"
         danger
         loading={cleaningOrphans}

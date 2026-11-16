@@ -2,7 +2,7 @@ export type PaymentStatus = 'Unpaid' | 'Partially Paid' | 'Paid' | 'Refunded';
 export type PaymentMethod = 'Cash' | 'UPI' | 'Other';
 export type PaymentType = 'payment' | 'refund';
 
-export type AttachmentCategory =
+export type FileCategory =
   | 'Bill photos'
   | 'UPI transaction screenshots'
   | 'Before-cleaning photos'
@@ -12,7 +12,7 @@ export type AttachmentCategory =
   | 'Work-area photos'
   | 'Other attachments';
 
-export const ATTACHMENT_CATEGORIES: AttachmentCategory[] = [
+export const FILE_CATEGORIES: FileCategory[] = [
   'Bill photos',
   'UPI transaction screenshots',
   'Before-cleaning photos',
@@ -37,8 +37,7 @@ export interface UserProfile {
   id: string;
   email: string;
   full_name: string;
-  role: 'admin' | 'staff';
-  is_active: boolean;
+  role: 'admin';
   theme_mode: 'light' | 'dark' | 'system';
   accent_color: string;
 }
@@ -53,13 +52,13 @@ export interface BusinessSettings {
 }
 
 export interface Customer {
-  customer_id: string;
+  id: string;
+  customer_code: string;
   full_name: string;
-  primary_phone: string;
-  secondary_phone: string | null;
+  phone_number: string;
+  alternate_phone: string | null;
   address: string;
-  locality: string | null;
-  landmark: string | null;
+  area: string | null;
   notes: string | null;
   created_at: string;
   updated_at: string;
@@ -67,15 +66,17 @@ export interface Customer {
 }
 
 export interface ServiceRecord {
-  service_id: string;
+  id: string;
   customer_id: string;
   service_date: string;
   service_type: string;
-  tank_capacity: string | null;
+  tank_details: string | null;
+  description: string | null;
   price: number;
   discount: number;
   total_amount: number;
   amount_paid: number;
+  balance_amount: number;
   payment_status: PaymentStatus;
   next_due_date: string | null;
   notes: string | null;
@@ -83,61 +84,67 @@ export interface ServiceRecord {
   updated_at: string;
   archived_at: string | null;
   customers?: {
-    customer_id: string;
+    id: string;
+    customer_code: string;
     full_name: string;
-    primary_phone: string;
-    secondary_phone?: string | null;
+    phone_number: string;
+    alternate_phone?: string | null;
     address?: string;
-    locality?: string | null;
-    landmark?: string | null;
+    area?: string | null;
   };
 }
 
 export interface PaymentRecord {
-  payment_id: string;
+  id: string;
   service_id: string;
+  customer_id: string;
   amount: number;
   payment_type: PaymentType;
   payment_method: PaymentMethod;
-  transaction_reference: string | null;
   payment_date: string;
+  reference_number: string | null;
   notes: string | null;
   created_at: string;
   archived_at: string | null;
   archive_reason: string | null;
   superseded_by: string | null;
   services?: {
-    service_id: string;
+    id: string;
     service_date: string;
     service_type: string;
     total_amount: number;
     amount_paid: number;
+    balance_amount: number;
     payment_status: PaymentStatus;
     customers?: {
-      customer_id: string;
+      id: string;
+      customer_code: string;
       full_name: string;
-      primary_phone: string;
+      phone_number: string;
     };
   };
 }
 
-export interface AttachmentRecord {
-  attachment_id: string;
+export interface ServiceFileRecord {
+  id: string;
+  customer_id: string;
   service_id: string;
-  storage_key: string;
-  original_filename: string;
+  payment_id: string | null;
+  file_name: string;
+  storage_path: string;
   mime_type: string;
   file_size: number;
-  category: AttachmentCategory;
+  category: FileCategory;
   uploaded_at: string;
   archived_at: string | null;
 }
 
 export interface ReminderRecord {
-  reminder_id: string;
-  service_id: string;
+  id: string;
   customer_id: string;
+  service_id: string | null;
   due_date: string;
+  reminder_type: 'service_due' | 'custom' | 'follow_up';
   status: 'active' | 'contacted' | 'confirmed' | 'snoozed' | 'dismissed' | 'completed';
   snoozed_until: string | null;
   contacted_at: string | null;
@@ -145,20 +152,21 @@ export interface ReminderRecord {
   notes: string | null;
   category: ReminderCategory;
   customers?: {
-    customer_id: string;
+    id: string;
+    customer_code: string;
     full_name: string;
-    primary_phone: string;
-    secondary_phone?: string | null;
+    phone_number: string;
+    alternate_phone?: string | null;
     address?: string;
-    locality?: string | null;
+    area?: string | null;
   };
   services?: {
-    service_id: string;
+    id: string;
     service_date: string;
     service_type: string;
-    tank_capacity?: string | null;
+    tank_details?: string | null;
     total_amount?: number;
-  };
+  } | null;
 }
 
 export interface DashboardMetrics {
