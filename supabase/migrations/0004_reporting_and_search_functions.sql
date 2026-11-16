@@ -17,7 +17,7 @@ DECLARE
   v_year_start DATE := date_trunc('year', v_today)::date;
   v_result JSONB;
 BEGIN
-  IF NOT public.is_active_staff() THEN
+  IF NOT public.is_authorized_owner() THEN
     RAISE EXCEPTION 'Unauthorized';
   END IF;
 
@@ -31,12 +31,13 @@ BEGIN
     ),
     'services_this_month', (
       SELECT COUNT(*) FROM public.services
-      WHERE archived_at IS NULL AND service_date >= v_month_start AND service_date <= v_today + INTERVAL '31 days'
+      WHERE archived_at IS NULL
         AND date_trunc('month', service_date)::date = v_month_start
     ),
     'services_this_year', (
       SELECT COUNT(*) FROM public.services
-      WHERE archived_at IS NULL AND date_trunc('year', service_date)::date = v_year_start
+      WHERE archived_at IS NULL
+        AND date_trunc('year', service_date)::date = v_year_start
     ),
     'todays_services', (
       SELECT COUNT(*) FROM public.services
@@ -55,7 +56,7 @@ BEGIN
       WHERE archived_at IS NULL AND status = 'active' AND due_date < v_today
     ),
     'pending_payments_amount', (
-      SELECT COALESCE(SUM(GREATEST(0, total_amount - amount_paid)), 0)
+      SELECT COALESCE(SUM(balance_amount), 0)
       FROM public.services
       WHERE archived_at IS NULL AND payment_status IN ('Unpaid', 'Partially Paid')
     ),
@@ -71,7 +72,7 @@ BEGIN
              ELSE 0 END
       ), 0)
       FROM public.payments p
-      JOIN public.services s ON s.service_id = p.service_id
+      JOIN public.services s ON s.id = p.service_id
       WHERE p.archived_at IS NULL AND s.archived_at IS NULL
         AND date_trunc('month', p.payment_date)::date = v_month_start
     ),
@@ -82,7 +83,7 @@ BEGIN
              ELSE 0 END
       ), 0)
       FROM public.payments p
-      JOIN public.services s ON s.service_id = p.service_id
+      JOIN public.services s ON s.id = p.service_id
       WHERE p.archived_at IS NULL AND s.archived_at IS NULL
         AND date_trunc('year', p.payment_date)::date = v_year_start
     )
@@ -95,12 +96,13 @@ $$;
 -- 2. Duplicate customer lookup by exact or normalized phone digits
 CREATE OR REPLACE FUNCTION public.find_duplicate_customers(p_phone TEXT)
 RETURNS TABLE (
-  customer_id UUID,
+  id UUID,
+  customer_code TEXT,
   full_name TEXT,
-  primary_phone TEXT,
-  secondary_phone TEXT,
+  phone_number TEXT,
+  alternate_phone TEXT,
   address TEXT,
-  locality TEXT,
+  area TEXT,
   archived_at TIMESTAMPTZ
 )
 LANGUAGE sql
@@ -109,27 +111,28 @@ SECURITY INVOKER
 SET search_path = public
 AS $$
   SELECT
-    c.customer_id,
+    c.id,
+    c.customer_code,
     c.full_name,
-    c.primary_phone,
-    c.secondary_phone,
+    c.phone_number,
+    c.alternate_phone,
     c.address,
-    c.locality,
+    c.area,
     c.archived_at
   FROM public.customers c
-  WHERE public.is_active_staff()
+  WHERE public.is_authorized_owner()
     AND (
-      c.primary_phone = trim(p_phone)
-      OR c.secondary_phone = trim(p_phone)
+      c.phone_number = trim(p_phone)
+      OR c.alternate_phone = trim(p_phone)
       OR (
         length(public.normalize_phone_digits(p_phone)) >= 6
         AND (
-          public.normalize_phone_digits(c.primary_phone) = public.normalize_phone_digits(p_phone)
-          OR public.normalize_phone_digits(COALESCE(c.secondary_phone, '')) = public.normalize_phone_digits(p_phone)
-          OR right(public.normalize_phone_digits(c.primary_phone), 10) = right(public.normalize_phone_digits(p_phone), 10)
+          public.normalize_phone_digits(c.phone_number) = public.normalize_phone_digits(p_phone)
+          OR public.normalize_phone_digits(COALESCE(c.alternate_phone, '')) = public.normalize_phone_digits(p_phone)
+          OR right(public.normalize_phone_digits(c.phone_number), 10) = right(public.normalize_phone_digits(p_phone), 10)
           OR (
-            c.secondary_phone IS NOT NULL
-            AND right(public.normalize_phone_digits(c.secondary_phone), 10) = right(public.normalize_phone_digits(p_phone), 10)
+            c.alternate_phone IS NOT NULL
+            AND right(public.normalize_phone_digits(c.alternate_phone), 10) = right(public.normalize_phone_digits(p_phone), 10)
           )
         )
       )
@@ -150,14 +153,14 @@ DECLARE
   v_payments_agg JSONB;
   v_breakdown JSONB;
 BEGIN
-  IF NOT public.is_active_staff() THEN
+  IF NOT public.is_authorized_owner() THEN
     RAISE EXCEPTION 'Unauthorized';
   END IF;
 
   SELECT jsonb_build_object(
     'total_services', COUNT(*),
     'total_billed', COALESCE(SUM(total_amount), 0),
-    'outstanding_balance', COALESCE(SUM(GREATEST(0, total_amount - amount_paid)), 0)
+    'outstanding_balance', COALESCE(SUM(balance_amount), 0)
   ) INTO v_services_agg
   FROM public.services
   WHERE archived_at IS NULL
@@ -171,7 +174,7 @@ BEGIN
     'other_payments', COALESCE(SUM(CASE WHEN payment_method = 'Other' THEN (CASE WHEN payment_type = 'payment' THEN amount ELSE -amount END) ELSE 0 END), 0)
   ) INTO v_payments_agg
   FROM public.payments p
-  JOIN public.services s ON s.service_id = p.service_id
+  JOIN public.services s ON s.id = p.service_id
   WHERE p.archived_at IS NULL
     AND s.archived_at IS NULL
     AND p.payment_date >= p_start_date
@@ -184,7 +187,7 @@ BEGIN
       COUNT(*) AS service_count,
       COALESCE(SUM(total_amount), 0) AS total_billed,
       COALESCE(SUM(amount_paid), 0) AS total_paid,
-      COALESCE(SUM(GREATEST(0, total_amount - amount_paid)), 0) AS outstanding
+      COALESCE(SUM(balance_amount), 0) AS outstanding
     FROM public.services
     WHERE archived_at IS NULL
       AND service_date >= p_start_date

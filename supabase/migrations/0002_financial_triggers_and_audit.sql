@@ -34,41 +34,7 @@ CREATE TRIGGER trg_business_settings_updated_at
   BEFORE UPDATE ON public.business_settings
   FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
--- 2. Prevent self-escalation of role or is_active on profiles by non-admins
-CREATE OR REPLACE FUNCTION public.protect_profile_privilege_columns()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-AS $$
-DECLARE
-  caller_is_admin BOOLEAN;
-BEGIN
-  IF auth.uid() IS NULL THEN
-    -- Allow privileged SQL/service migrations when executed outside PostgREST JWT context
-    RETURN NEW;
-  END IF;
-
-  SELECT EXISTS (
-    SELECT 1 FROM public.profiles p
-    WHERE p.id = auth.uid() AND p.is_active = true AND p.role = 'admin'
-  ) INTO caller_is_admin;
-
-  IF NOT caller_is_admin THEN
-    IF NEW.role IS DISTINCT FROM OLD.role OR NEW.is_active IS DISTINCT FROM OLD.is_active THEN
-      RAISE EXCEPTION 'Only an active administrator may modify role or activation status';
-    END IF;
-  END IF;
-
-  RETURN NEW;
-END;
-$$;
-
-CREATE TRIGGER trg_protect_profile_privileges
-  BEFORE UPDATE ON public.profiles
-  FOR EACH ROW EXECUTE FUNCTION public.protect_profile_privilege_columns();
-
--- 3. Deterministic payment status computation helper
+-- 2. Deterministic payment status helper
 CREATE OR REPLACE FUNCTION public.compute_payment_status(
   p_total_amount NUMERIC,
   p_gross_paid NUMERIC,
@@ -97,7 +63,7 @@ BEGIN
 END;
 $$;
 
--- 4. Enforce service total_amount & payment_status on INSERT/UPDATE
+-- 3. Enforce service total_amount, balance_amount & payment_status
 CREATE OR REPLACE FUNCTION public.enforce_service_financials()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -106,6 +72,11 @@ DECLARE
   v_gross_paid NUMERIC := 0;
   v_refunded NUMERIC := 0;
 BEGIN
+  -- Support supplying either price+discount OR direct total_amount
+  IF NEW.price = 0 AND NEW.total_amount > 0 AND NEW.discount = 0 THEN
+    NEW.price := NEW.total_amount;
+  END IF;
+
   IF NEW.price < 0 OR NEW.discount < 0 THEN
     RAISE EXCEPTION 'Price and discount must be non-negative';
   END IF;
@@ -117,6 +88,7 @@ BEGIN
 
   IF TG_OP = 'INSERT' THEN
     NEW.amount_paid := 0;
+    NEW.balance_amount := NEW.total_amount;
     NEW.payment_status := public.compute_payment_status(NEW.total_amount, 0, 0);
   ELSE
     SELECT
@@ -124,9 +96,10 @@ BEGIN
       COALESCE(SUM(CASE WHEN payment_type = 'refund' THEN amount ELSE 0 END), 0)
     INTO v_gross_paid, v_refunded
     FROM public.payments
-    WHERE service_id = NEW.service_id AND archived_at IS NULL;
+    WHERE service_id = NEW.id AND archived_at IS NULL;
 
     NEW.amount_paid := ROUND(GREATEST(0, v_gross_paid - v_refunded), 2);
+    NEW.balance_amount := ROUND(GREATEST(0, NEW.total_amount - NEW.amount_paid), 2);
     NEW.payment_status := public.compute_payment_status(NEW.total_amount, v_gross_paid, v_refunded);
   END IF;
 
@@ -135,8 +108,33 @@ END;
 $$;
 
 CREATE TRIGGER trg_services_enforce_financials
-  BEFORE INSERT OR UPDATE OF price, discount ON public.services
+  BEFORE INSERT OR UPDATE OF price, discount, total_amount ON public.services
   FOR EACH ROW EXECUTE FUNCTION public.enforce_service_financials();
+
+-- 4. Ensure payment customer_id matches parent service.customer_id
+CREATE OR REPLACE FUNCTION public.sync_payment_customer()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v_customer_id UUID;
+BEGIN
+  SELECT customer_id INTO v_customer_id
+  FROM public.services
+  WHERE id = NEW.service_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Referenced service not found';
+  END IF;
+
+  NEW.customer_id := v_customer_id;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_payments_sync_customer
+  BEFORE INSERT ON public.payments
+  FOR EACH ROW EXECUTE FUNCTION public.sync_payment_customer();
 
 -- 5. Recalculate service payment totals whenever payments change
 CREATE OR REPLACE FUNCTION public.recalculate_service_payment_totals()
@@ -151,13 +149,14 @@ DECLARE
   v_gross_paid NUMERIC;
   v_refunded NUMERIC;
   v_net_paid NUMERIC;
+  v_balance NUMERIC;
   v_status TEXT;
 BEGIN
   v_service_id := COALESCE(NEW.service_id, OLD.service_id);
 
   SELECT total_amount INTO v_total_amount
   FROM public.services
-  WHERE service_id = v_service_id;
+  WHERE id = v_service_id;
 
   IF NOT FOUND THEN
     RETURN COALESCE(NEW, OLD);
@@ -171,12 +170,14 @@ BEGIN
   WHERE service_id = v_service_id AND archived_at IS NULL;
 
   v_net_paid := ROUND(GREATEST(0, v_gross_paid - v_refunded), 2);
+  v_balance := ROUND(GREATEST(0, v_total_amount - v_net_paid), 2);
   v_status := public.compute_payment_status(v_total_amount, v_gross_paid, v_refunded);
 
   UPDATE public.services
   SET amount_paid = v_net_paid,
+      balance_amount = v_balance,
       payment_status = v_status
-  WHERE service_id = v_service_id;
+  WHERE id = v_service_id;
 
   RETURN COALESCE(NEW, OLD);
 END;
@@ -200,30 +201,29 @@ BEGIN
 
   IF TG_OP = 'INSERT' AND NEW.next_due_date IS NOT NULL THEN
     INSERT INTO public.reminders (
-      service_id, customer_id, due_date, status, created_by, updated_by
+      service_id, customer_id, due_date, reminder_type, status, created_by, updated_by
     )
     VALUES (
-      NEW.service_id, NEW.customer_id, NEW.next_due_date, 'active', NEW.created_by, NEW.updated_by
+      NEW.id, NEW.customer_id, NEW.next_due_date, 'service_due', 'active', NEW.created_by, NEW.updated_by
     )
     ON CONFLICT DO NOTHING;
   ELSIF TG_OP = 'UPDATE' AND NEW.next_due_date IS DISTINCT FROM OLD.next_due_date THEN
     IF NEW.next_due_date IS NOT NULL THEN
-      -- Update existing active reminder if one exists, otherwise create one if none exists at all for this service
       UPDATE public.reminders
       SET due_date = NEW.next_due_date,
           updated_by = NEW.updated_by
-      WHERE service_id = NEW.service_id
+      WHERE service_id = NEW.id
         AND archived_at IS NULL
         AND status IN ('active', 'contacted', 'confirmed', 'snoozed');
 
       IF NOT FOUND AND NOT EXISTS (
-        SELECT 1 FROM public.reminders WHERE service_id = NEW.service_id AND archived_at IS NULL
+        SELECT 1 FROM public.reminders WHERE service_id = NEW.id AND archived_at IS NULL
       ) THEN
         INSERT INTO public.reminders (
-          service_id, customer_id, due_date, status, created_by, updated_by
+          service_id, customer_id, due_date, reminder_type, status, created_by, updated_by
         )
         VALUES (
-          NEW.service_id, NEW.customer_id, NEW.next_due_date, 'active', NEW.updated_by, NEW.updated_by
+          NEW.id, NEW.customer_id, NEW.next_due_date, 'service_due', 'active', NEW.updated_by, NEW.updated_by
         )
         ON CONFLICT DO NOTHING;
       END IF;
@@ -262,9 +262,11 @@ BEGIN
     v_action := 'INSERT';
     v_old := NULL;
     v_new := to_jsonb(NEW);
+    v_entity_id := NEW.id;
   ELSIF TG_OP = 'UPDATE' THEN
     v_old := to_jsonb(OLD);
     v_new := to_jsonb(NEW);
+    v_entity_id := NEW.id;
     IF (v_old->>'archived_at') IS NULL AND (v_new->>'archived_at') IS NOT NULL THEN
       v_action := 'ARCHIVE';
     ELSIF (v_old->>'archived_at') IS NOT NULL AND (v_new->>'archived_at') IS NULL THEN
@@ -272,26 +274,11 @@ BEGIN
     ELSE
       v_action := 'UPDATE';
     END IF;
-  ELSE
-    RETURN COALESCE(NEW, OLD);
-  END IF;
-
-  v_entity_id := COALESCE(
-    (v_new->>'customer_id')::uuid,
-    (v_new->>'service_id')::uuid,
-    (v_new->>'payment_id')::uuid,
-    (v_new->>'attachment_id')::uuid,
-    (v_new->>'reminder_id')::uuid,
-    (v_new->>'id')::uuid
-  );
-
-  -- Extract exact primary key per table cleanly
-  IF TG_TABLE_NAME = 'customers' THEN v_entity_id := NEW.customer_id;
-  ELSIF TG_TABLE_NAME = 'services' THEN v_entity_id := NEW.service_id;
-  ELSIF TG_TABLE_NAME = 'payments' THEN v_entity_id := NEW.payment_id;
-  ELSIF TG_TABLE_NAME = 'attachments' THEN v_entity_id := NEW.attachment_id;
-  ELSIF TG_TABLE_NAME = 'reminders' THEN v_entity_id := NEW.reminder_id;
-  ELSIF TG_TABLE_NAME = 'business_settings' THEN v_entity_id := NEW.id;
+  ELSIF TG_OP = 'DELETE' THEN
+    v_action := 'DELETE_FILE';
+    v_old := to_jsonb(OLD);
+    v_new := NULL;
+    v_entity_id := OLD.id;
   END IF;
 
   INSERT INTO public.audit_logs (
@@ -300,7 +287,7 @@ BEGIN
     v_actor_id, v_actor_email, v_action, TG_TABLE_NAME, v_entity_id, v_old, v_new
   );
 
-  RETURN NEW;
+  RETURN COALESCE(NEW, OLD);
 END;
 $$;
 
@@ -313,7 +300,7 @@ CREATE TRIGGER trg_audit_services AFTER INSERT OR UPDATE ON public.services
 CREATE TRIGGER trg_audit_payments AFTER INSERT OR UPDATE ON public.payments
   FOR EACH ROW EXECUTE FUNCTION public.write_audit_log();
 
-CREATE TRIGGER trg_audit_attachments AFTER INSERT OR UPDATE ON public.attachments
+CREATE TRIGGER trg_audit_service_files AFTER INSERT OR UPDATE OR DELETE ON public.service_files
   FOR EACH ROW EXECUTE FUNCTION public.write_audit_log();
 
 CREATE TRIGGER trg_audit_reminders AFTER INSERT OR UPDATE ON public.reminders
@@ -322,7 +309,7 @@ CREATE TRIGGER trg_audit_reminders AFTER INSERT OR UPDATE ON public.reminders
 CREATE TRIGGER trg_audit_business_settings AFTER INSERT OR UPDATE ON public.business_settings
   FOR EACH ROW EXECUTE FUNCTION public.write_audit_log();
 
--- 8. Auto-provision inactive profile when an auth user is created
+-- 8. Auto-provision profile for auth.users (still requires owner_allowlist entry for access!)
 CREATE OR REPLACE FUNCTION public.handle_new_auth_user()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -330,13 +317,12 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
-  INSERT INTO public.profiles (id, email, full_name, role, is_active)
+  INSERT INTO public.profiles (id, email, full_name, role)
   VALUES (
     NEW.id,
     NEW.email,
-    COALESCE(NEW.raw_user_meta_data->>'full_name', 'Administrator'),
-    'staff',
-    false
+    COALESCE(NEW.raw_user_meta_data->>'full_name', 'Owner Administrator'),
+    'admin'
   )
   ON CONFLICT (id) DO NOTHING;
   RETURN NEW;
