@@ -1,0 +1,901 @@
+# ZERO BASE — FULL APPLICATION DEVELOPMENT SPECIFICATION
+
+## ROLE
+
+Act as a senior software architect, full-stack developer, database engineer, cybersecurity engineer, UI/UX designer and DevOps engineer.
+
+Build **Zero Base**, a complete, production-ready, cloud-hosted business management application for a water-tank cleaning service business.
+
+This is a real application that will store actual customer information, service records, payment records, bills and photographs.
+
+Do not build a static demo, fake dashboard, frontend-only prototype or mock database.
+
+Build the actual working application with a secure backend, real database, real cloud file storage, authentication, APIs, deployment configuration and recovery procedures.
+
+Prioritize:
+1. Security.
+2. Data integrity.
+3. Reliability.
+4. Correct business logic.
+5. Excellent UI/UX.
+6. Performance.
+
+---
+
+# 1. TECHNOLOGY STACK
+
+Use the following architecture.
+
+### Frontend
+- React
+- TypeScript
+- Vite
+- Tailwind CSS
+- Lucide icons
+
+### Hosting
+- Cloudflare Pages
+
+### Backend
+- Cloudflare Workers
+- REST API
+- Cloudflare environment bindings and secrets
+
+### Database
+- Supabase PostgreSQL
+
+### Authentication
+- Supabase Auth
+- Private administrator login
+- No public registration
+
+### File storage
+- Cloudflare R2
+- Private R2 bucket
+- All customer photographs, bills and uploaded documents must be stored in R2.
+
+### Source control
+- Private GitHub repository
+- Git-based deployment
+
+IMPORTANT ARCHITECTURE:
+
+Cloudflare Pages serves the frontend.
+
+Cloudflare Workers handles the backend API and secure R2 operations.
+
+Supabase PostgreSQL stores structured business data.
+
+Supabase Auth handles administrator authentication.
+
+Cloudflare R2 stores uploaded files.
+
+Do not use Firebase.
+
+Do not use local databases, local file storage or browser storage as the permanent source of business records.
+
+Use browser storage only for non-sensitive preferences such as theme selection.
+
+All business data must persist in the cloud.
+
+---
+
+# 2. APPLICATION IDENTITY
+
+Application name: ZERO BASE
+
+Create a premium, minimal and professional business software identity.
+
+The interface should feel like a modern SaaS management platform, not an ordinary template-based admin dashboard.
+
+Design direction:
+- Minimal
+- Professional
+- Clean
+- Modern
+- Functional
+- Elegant
+- Strong visual hierarchy
+
+Avoid:
+- Excessive gradients
+- Unnecessary animations
+- Oversized cards
+- Too many colours
+- Cartoon-like icons
+- Generic dashboard templates
+- Unnecessary decorative elements
+
+Create a simple ZERO BASE wordmark in the application interface.
+
+Keep the application name configurable in the future.
+
+---
+
+# 3. AUTHENTICATION AND ADMIN ACCESS
+
+This application is private.
+
+Only authorized administrators can log in.
+
+Requirements:
+- Login page
+- Logout
+- Password reset
+- Protected application routes
+- Session validation
+- Secure authentication
+- No public signup
+- No anonymous database access
+
+Start with one administrator account.
+
+Design the authorization architecture so multiple authorized employees can be supported in the future without rebuilding the entire application.
+
+Never hardcode credentials.
+
+Never expose privileged API keys in frontend code.
+
+Every protected API request must verify the user's authentication and authorization.
+
+---
+
+# 4. MAIN NAVIGATION
+
+Create these sections:
+
+1. Dashboard
+2. Service History
+3. Customers
+4. Reminders
+5. Payments
+6. Reports
+7. Settings
+
+Use a responsive sidebar on desktop and a suitable navigation layout on mobile.
+
+Keep navigation consistent throughout the application.
+
+---
+
+# 5. DASHBOARD
+
+Create a functional dashboard showing real database information.
+
+Display:
+
+- Total customers
+- Total services
+- Services this month
+- Services this year
+- Today's services
+- Upcoming reminders
+- Due today
+- Overdue services
+- Pending payments
+- Revenue this month
+- Revenue this year
+
+Include:
+
+- Recent service records
+- Upcoming reminder list
+- Quick customer search
+- Add Customer action
+- Add Service action
+
+Every statistic must come from actual database queries.
+
+Never use fake statistics in production.
+
+---
+
+# 6. CUSTOMER MANAGEMENT
+
+Create a customer management system.
+
+Customer fields:
+
+- customer_id
+- full_name
+- primary_phone
+- secondary_phone
+- address
+- locality
+- landmark
+- notes
+- created_at
+- updated_at
+- archived_at
+
+Each customer must have a permanent UUID.
+
+Customer search must support:
+
+- Full name
+- Partial name
+- Primary phone
+- Secondary phone
+- Partial phone
+- Address
+- Locality
+- Customer ID
+
+Phone numbers must be stored as strings.
+
+Do not remove leading zeros or country codes.
+
+When creating a customer, check whether their phone number already exists.
+
+If a matching customer exists, show a warning and offer to open the existing record.
+
+Do not automatically merge customer records.
+
+### Customer profile
+
+When opening a customer, show:
+
+- Customer details
+- Phone numbers
+- Address
+- Total services
+- Last service date
+- Total billed amount
+- Total paid amount
+- Outstanding amount
+- Next scheduled service
+- Complete service history
+
+Include an Add New Service button.
+
+When adding another service, automatically connect it to the existing customer ID.
+
+Never create a new customer just because the same person receives another cleaning service.
+
+---
+
+# 7. YEAR-WISE SERVICE HISTORY
+
+This is one of the most important features.
+
+The main Service History page must organize records by the actual date the cleaning happened.
+
+Example:
+
+2026
+  November
+    16 November — Customer A — ₹1,500
+    12 November — Customer B — ₹1,200
+
+  October
+    28 October — Customer C — ₹1,000
+
+2025
+  December
+  November
+  October
+
+2024
+  December
+  November
+  October
+
+Requirements:
+
+- Automatically generate years from database records.
+- Newest year first.
+- Newest month first.
+- Newest service date first.
+- Expand and collapse years.
+- Expand and collapse months.
+- Filter by year.
+- Filter by month.
+- Search by customer.
+- Filter by service type.
+- Filter by payment status.
+
+CRITICAL DATE RULE:
+
+Use `service_date` for year-wise grouping.
+
+Never use `created_at` or file upload timestamps to determine the service year.
+
+Example:
+
+Actual service date: 20 December 2025.
+
+Record creation date: 5 January 2026.
+
+The service must appear under December 2025.
+
+Keep these fields separate:
+
+- service_date
+- created_at
+- updated_at
+- uploaded_at
+- next_due_date
+
+Use Asia/Kolkata as the business timezone.
+
+---
+
+# 8. SERVICE MANAGEMENT
+
+Every cleaning operation must create a separate service record.
+
+Service fields:
+
+- service_id
+- customer_id
+- service_date
+- service_type
+- tank_capacity
+- price
+- discount
+- total_amount
+- amount_paid
+- payment_status
+- next_due_date
+- notes
+- created_at
+- updated_at
+- created_by
+- updated_by
+- archived_at
+
+Service types should be configurable.
+
+Allow the administrator to edit the service date, price, service type and next due date.
+
+Do not overwrite previous service records when a customer returns.
+
+Each new service must have its own unique service ID.
+
+---
+
+# 9. PAYMENT MANAGEMENT
+
+Support:
+
+- Cash
+- UPI
+- Other payment methods
+
+Support full payments, partial payments and multiple payments.
+
+Create a separate payments table.
+
+Payment fields:
+
+- payment_id
+- service_id
+- amount
+- payment_method
+- transaction_reference
+- payment_date
+- notes
+- created_at
+- created_by
+- archived_at
+
+Calculations:
+
+Total amount = Price - Discount.
+
+Amount paid = Sum of valid payments.
+
+Outstanding balance = Total amount - Amount paid.
+
+Payment status:
+- Unpaid
+- Partially Paid
+- Paid
+- Refunded
+
+Use reliable database-side validation for financial calculations.
+
+Do not rely only on frontend calculations.
+
+Preserve an audit history when payment records are corrected.
+
+Never silently remove payment records.
+
+---
+
+# 10. CLOUD FILE STORAGE — CLOUDFLARE R2
+
+All uploaded files must be stored in Cloudflare R2.
+
+Never store uploaded business photographs permanently on the user's device.
+
+Support these upload categories:
+
+- Bill photos
+- UPI transaction screenshots
+- Before-cleaning photos
+- After-cleaning photos
+- Tank photos
+- Hose photos
+- Work-area photos
+- Other attachments
+
+Create an attachments database table:
+
+- attachment_id
+- service_id
+- storage_key
+- original_filename
+- mime_type
+- file_size
+- category
+- uploaded_at
+- uploaded_by
+- archived_at
+
+R2 requirements:
+
+- Use a private bucket.
+- Use Cloudflare Workers to access R2.
+- Use secure authorization checks.
+- Generate temporary access links where needed.
+- Never expose R2 secret keys in browser code.
+- Never store permanent public file URLs.
+- Validate actual file types and sizes.
+- Generate unique storage keys.
+- Handle upload failures.
+- Handle database metadata failures.
+- Detect orphaned files.
+- Provide retry options.
+- Do not silently lose uploaded files.
+
+Create a clean folder/key organization strategy using customer IDs, service IDs and unique attachment IDs.
+
+The database should store file metadata and R2 object keys, not image binary data.
+
+---
+
+# 11. REMINDER MANAGEMENT
+
+Every service may have a next due date.
+
+Create reminder categories:
+
+- Upcoming
+- Due Today
+- Overdue
+- Contacted
+- Confirmed
+- Snoozed
+
+Allow the administrator to:
+
+- Edit the due date.
+- Mark contacted.
+- Mark confirmed.
+- Snooze.
+- Dismiss incorrect reminders.
+- Create a new service from a reminder.
+
+Do not automatically create a service when a reminder becomes due.
+
+A reminder is not a completed service.
+
+Prevent duplicate active reminders for the same service.
+
+Start with in-app reminders only.
+
+---
+
+# 12. REPORTS AND ANALYTICS
+
+Create reports for:
+
+- Daily
+- Monthly
+- Yearly
+- Custom date range
+
+Display:
+
+- Total services
+- Total billed amount
+- Total collected amount
+- Outstanding balance
+- Cash payments
+- UPI payments
+- Service type breakdown
+
+Allow CSV export.
+
+All reports must use real database records and respect selected filters.
+
+---
+
+# 13. DATABASE ARCHITECTURE
+
+Use PostgreSQL.
+
+Create normalized tables:
+
+1. profiles
+2. customers
+3. services
+4. payments
+5. attachments
+6. reminders
+7. audit_logs
+8. business_settings
+
+Use UUID primary keys.
+
+Create appropriate foreign keys, constraints and indexes.
+
+Index commonly searched fields, including:
+
+- Primary phone
+- Secondary phone
+- Customer name
+- Locality
+- Service customer_id
+- Service service_date
+- Service next_due_date
+- Payment service_id
+- Payment payment_date
+- Reminder due_date
+- Reminder status
+
+Use migrations for all schema changes.
+
+Never perform uncontrolled destructive schema changes.
+
+Use deliberate deletion behavior and avoid cascading deletion of important business records.
+
+---
+
+# 14. SECURITY
+
+Security is mandatory.
+
+Implement:
+
+- Supabase Auth
+- JWT validation in the Worker API
+- Role-based authorization
+- PostgreSQL Row Level Security
+- Private R2 bucket
+- Server-side R2 access
+- Input validation
+- Safe error handling
+- Rate limiting
+- Request validation
+- Secure file uploads
+- Audit logs
+
+The Worker must authenticate requests before allowing access to business records or files.
+
+Do not trust frontend-supplied user IDs, roles or permission claims.
+
+Where the Worker accesses Supabase, use a design that preserves authorization and database access policies. Do not expose service-role credentials to the browser.
+
+Never commit:
+- API secrets
+- Supabase service-role keys
+- R2 access keys
+- Passwords
+- Production environment files
+
+Use environment variables and Cloudflare secrets.
+
+---
+
+# 15. DATA PROTECTION AND BACKUPS
+
+No system can honestly guarantee zero data loss.
+
+Design Zero Base to minimize the risk and make recovery possible.
+
+Implement:
+
+- Soft deletion.
+- Archive and restore.
+- Audit logs.
+- Safe database transactions.
+- Duplicate submission prevention.
+- Network failure handling.
+- Backup procedures.
+- Recovery documentation.
+
+Database and R2 files require separate backup procedures.
+
+A PostgreSQL backup does not automatically contain R2 objects.
+
+Create a documented backup system for:
+
+1. PostgreSQL database.
+2. R2 uploaded files.
+3. Attachment metadata and storage-key mappings.
+
+Keep backup copies outside the primary production resources.
+
+Use multiple backup generations and retention policies.
+
+Log backup success and failure.
+
+Provide restoration procedures.
+
+Test restoring backups in a separate environment.
+
+Never claim a backup succeeded without verifying it.
+
+---
+
+# 16. COMPLETE THEME SYSTEM — DARK, LIGHT AND CUSTOM COLOURS
+
+The theme system is an important part of Zero Base.
+
+Build a complete customizable design system.
+
+### Theme modes
+
+Provide three options:
+
+1. Light
+2. Dark
+3. System Default
+
+The user must be able to switch between Light and Dark instantly.
+
+System Default should follow the device's preferred appearance.
+
+Persist the selected preference so it remains after logout or when opening the application again on another visit.
+
+If appropriate, store the preference in the administrator's profile so it can sync across devices.
+
+### Custom accent colours
+
+Allow the administrator to customize the application's accent colour.
+
+Provide preset palettes such as:
+
+- Ocean Blue
+- Royal Blue
+- Emerald
+- Violet
+- Amber
+- Crimson
+- Slate
+- Monochrome
+
+Also provide a custom colour picker.
+
+Allow entering a custom HEX colour.
+
+Example: #2563EB
+
+Validate HEX input before applying it.
+
+### Theme behaviour
+
+Changing the accent colour must update:
+
+- Primary buttons
+- Active navigation
+- Selected tabs
+- Links
+- Focus rings
+- Selected controls
+- Status-independent highlights
+- Charts where appropriate
+
+Do not change warning, error and success colours into the accent colour.
+
+Those semantic colours must remain distinguishable.
+
+### Dark theme
+
+Use carefully selected dark surfaces.
+
+Avoid pure black everywhere.
+
+Use different surface levels for:
+- Main background
+- Sidebar
+- Cards
+- Modals
+- Input fields
+- Dropdowns
+
+Maintain readable text contrast.
+
+### Light theme
+
+Use:
+- Clean neutral backgrounds
+- Clear white surfaces
+- Subtle borders
+- Appropriate text contrast
+- Comfortable spacing
+
+### Design tokens
+
+Build the theme using CSS variables or an equivalent centralized design-token system.
+
+Do not hardcode theme colours independently across individual components.
+
+Create consistent variables for:
+
+- Background
+- Surface
+- Elevated surface
+- Primary text
+- Secondary text
+- Borders
+- Accent
+- Accent hover
+- Focus
+- Success
+- Warning
+- Error
+
+Ensure every screen, modal, dropdown, form, table and dashboard component supports both light and dark modes.
+
+Avoid flash of the wrong theme during initial loading.
+
+Ensure accessibility and readable contrast for custom colours.
+
+---
+
+# 17. UI/UX QUALITY
+
+Create a polished business application.
+
+Use:
+
+- Consistent spacing.
+- Responsive tables.
+- Clear forms.
+- Good typography.
+- Useful empty states.
+- Loading skeletons.
+- Clear error states.
+- Confirmation dialogs for important actions.
+- Accessible controls.
+- Keyboard navigation.
+
+Make desktop and mobile experiences equally usable.
+
+Do not sacrifice usability for decoration.
+
+Use realistic layout density suitable for managing many customers and service records.
+
+---
+
+# 18. CLOUDFLARE DEPLOYMENT
+
+Prepare the application for production deployment.
+
+Frontend:
+- Cloudflare Pages.
+- GitHub integration.
+- Build command: `npm run build`.
+- Output directory: `dist`.
+
+Backend:
+- Cloudflare Workers.
+- Secure API routes.
+- Environment variables and secrets.
+- R2 bucket binding.
+
+Database:
+- Supabase project.
+- SQL migrations.
+- Authentication configuration.
+- RLS policies.
+
+Storage:
+- Private R2 bucket.
+- Worker-based uploads and downloads.
+- Secure file access.
+
+Provide a deployment guide explaining:
+
+1. Create the Supabase project.
+2. Configure authentication.
+3. Apply database migrations.
+4. Create the R2 bucket.
+5. Configure Worker bindings.
+6. Configure Cloudflare secrets.
+7. Connect the private GitHub repository.
+8. Deploy Cloudflare Pages.
+9. Deploy Cloudflare Workers.
+10. Test the complete production flow.
+
+Use separate development and production configurations.
+
+Do not pretend a deployment has succeeded if credentials or account permissions are missing.
+
+---
+
+# 19. DEVELOPMENT AND TESTING
+
+Work in organized stages.
+
+Stage 1: Inspect the existing project and establish architecture.
+
+Stage 2: Create the frontend design system and responsive layouts.
+
+Stage 3: Implement database schema and migrations.
+
+Stage 4: Implement authentication and authorization.
+
+Stage 5: Implement customer and service management.
+
+Stage 6: Implement payment management.
+
+Stage 7: Implement R2 uploads and file access.
+
+Stage 8: Implement reminders and reports.
+
+Stage 9: Implement theme customization.
+
+Stage 10: Implement audit logging and backups.
+
+Stage 11: Run tests and security checks.
+
+Stage 12: Prepare production deployment.
+
+Test:
+
+- Customer creation and search.
+- Duplicate customer warnings.
+- Year-wise history.
+- Actual service-date grouping.
+- Payment calculations.
+- Partial payments.
+- R2 uploads and downloads.
+- Private file access.
+- Authentication.
+- Unauthorized API access.
+- Theme switching.
+- Custom colour persistence.
+- Mobile responsiveness.
+- Backup and recovery.
+
+Do not report tests as passed unless they were actually executed.
+
+Do not create fake functionality just to make the interface look complete.
+
+---
+
+# 20. FINAL DELIVERABLES
+
+Provide:
+
+- Complete frontend.
+- Complete Worker API.
+- Database schema.
+- SQL migrations.
+- RLS policies.
+- Authentication.
+- R2 storage integration.
+- Theme system.
+- Backup and recovery scripts.
+- Test results.
+- `.env.example`.
+- `.gitignore`.
+- README.
+- Deployment instructions.
+- Security documentation.
+
+Do not stop after building the visual interface.
+
+The final product must be a real, working cloud-hosted application.
+
+FINAL REQUIREMENTS:
+
+ZERO BASE must be secure, responsive, reliable, customizable and easy to operate.
+
+Its most important business function is finding customers quickly and maintaining accurate historical service records.
+
+Build it carefully. Never sacrifice data integrity or security for speed.

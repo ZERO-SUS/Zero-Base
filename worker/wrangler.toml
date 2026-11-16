@@ -1,0 +1,35 @@
+name = "zero-base-api"
+main = "src/index.ts"
+compatibility_date = "2025-02-14"
+compatibility_flags = ["nodejs_compat"]
+
+# Development R2 bucket binding (local Miniflare / dev bucket)
+[[r2_buckets]]
+binding = "FILES_BUCKET"
+bucket_name = "zero-base-files-dev"
+preview_bucket_name = "zero-base-files-dev"
+
+[vars]
+ENVIRONMENT = "development"
+BUSINESS_TIMEZONE = "Asia/Kolkata"
+MAX_UPLOAD_BYTES = "15728640"
+
+# Production environment configuration
+[env.production]
+name = "zero-base-api-prod"
+
+[[env.production.r2_buckets]]
+binding = "FILES_BUCKET"
+bucket_name = "zero-base-files"
+
+[env.production.vars]
+ENVIRONMENT = "production"
+BUSINESS_TIMEZONE = "Asia/Kolkata"
+MAX_UPLOAD_BYTES = "15728640"
+
+# Secrets required via `wrangler secret put <NAME>`:
+# - SUPABASE_URL
+# - SUPABASE_ANON_KEY
+# - SUPABASE_JWT_SECRET (optional if using JWKS)
+# - FILE_SIGNING_SECRET
+# - ALLOWED_ORIGINS

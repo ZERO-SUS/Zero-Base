@@ -1,0 +1,108 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Light Theme Surface Hierarchy */
+  --zb-bg: #f8fafc;
+  --zb-sidebar: #ffffff;
+  --zb-surface: #ffffff;
+  --zb-elevated: #ffffff;
+  --zb-input: #ffffff;
+
+  /* Text Hierarchy */
+  --zb-text-primary: #0f172a;
+  --zb-text-secondary: #475569;
+  --zb-text-muted: #64748b;
+
+  /* Borders */
+  --zb-border: #e2e8f0;
+  --zb-border-strong: #cbd5e1;
+
+  /* Dynamic Accent Tokens (managed by theme.ts) */
+  --zb-accent: #2563eb;
+  --zb-accent-hover: #1d4ed8;
+  --zb-accent-soft: rgba(37, 99, 235, 0.1);
+  --zb-accent-fg: #ffffff;
+  --zb-focus: rgba(37, 99, 235, 0.35);
+
+  /* Fixed Semantic Status Tokens (never overridden by accent colour) */
+  --zb-success: #059669;
+  --zb-success-soft: rgba(5, 150, 105, 0.12);
+  --zb-warning: #d97706;
+  --zb-warning-soft: rgba(217, 119, 6, 0.12);
+  --zb-error: #dc2626;
+  --zb-error-soft: rgba(220, 38, 38, 0.12);
+}
+
+html.dark {
+  color-scheme: dark;
+
+  /* Carefully layered dark surfaces (avoids pure black everywhere) */
+  --zb-bg: #0b0f17;
+  --zb-sidebar: #0f1520;
+  --zb-surface: #131a26;
+  --zb-elevated: #1a2232;
+  --zb-input: #0e141f;
+
+  /* Text Hierarchy */
+  --zb-text-primary: #f1f5f9;
+  --zb-text-secondary: #94a3b8;
+  --zb-text-muted: #64748b;
+
+  /* Borders */
+  --zb-border: #1e293b;
+  --zb-border-strong: #334155;
+
+  /* Semantic Tokens tuned for dark surface legibility */
+  --zb-success: #10b981;
+  --zb-success-soft: rgba(16, 185, 129, 0.15);
+  --zb-warning: #f59e0b;
+  --zb-warning-soft: rgba(245, 158, 11, 0.15);
+  --zb-error: #ef4444;
+  --zb-error-soft: rgba(239, 68, 68, 0.15);
+}
+
+@layer base {
+  body {
+    background-color: var(--zb-bg);
+    color: var(--zb-text-primary);
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+
+  input,
+  select,
+  textarea {
+    background-color: var(--zb-input);
+    color: var(--zb-text-primary);
+    border-color: var(--zb-border);
+  }
+
+  input:focus,
+  select:focus,
+  textarea:focus {
+    outline: none;
+    border-color: var(--zb-accent);
+    box-shadow: 0 0 0 3px var(--zb-focus);
+  }
+}
+
+.zb-card {
+  background-color: var(--zb-surface);
+  border: 1px solid var(--zb-border);
+  border-radius: 0.75rem;
+}
+
+.zb-btn-primary {
+  background-color: var(--zb-accent);
+  color: var(--zb-accent-fg);
+}
+
+.zb-btn-primary:hover:not(:disabled) {
+  background-color: var(--zb-accent-hover);
+}
+
+.zb-btn-primary:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--zb-focus);
+}

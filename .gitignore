@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+worker/node_modules/
+
+# Build outputs
+dist/
+worker/dist/
+.wrangler/
+worker/.wrangler/
+
+# Environment & secrets (NEVER commit production secrets)
+.env
+.env.local
+.env.development.local
+.env.production
+.env.production.local
+.dev.vars
+worker/.dev.vars
+worker/.env
+
+# Backups & logs
+backups/
+*.log
+*.sql.gz
+*.dump
+
+# OS & editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.qodo/
