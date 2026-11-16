@@ -1,13 +1,10 @@
 #!/usr/bin/env node
 /**
- * ZERO BASE — Backup Integrity & R2 Parity Verifier
+ * ZERO BASE — Backup Integrity & Supabase Storage Parity Verifier
  * Verifies:
  * 1. Latest PostgreSQL backup manifest exists and dump SHA-256 matches
- * 2. Latest R2 inventory manifest exists and local mirrored files match SHA-256
- * 3. Every active attachment metadata storage_key in a JSON snapshot exists in R2 mirror
- *
- * Usage:
- *   node scripts/verify-backup.mjs [--backup-dir ./backups] [--snapshot ./snapshot.json]
+ * 2. Latest Storage inventory manifest exists and mirrored files match SHA-256
+ * 3. Every `service_files` storage_path in a JSON snapshot exists in the Storage mirror
  */
 
 import fs from 'node:fs';
@@ -62,19 +59,19 @@ function verifyPostgresBackups() {
   console.log(`OK: PostgreSQL backup ${generations[0]} verified (${manifest.size_bytes} bytes)`);
 }
 
-function verifyR2Mirror() {
-  const r2Mirror = path.join(backupDir, 'r2', 'latest');
-  const r2ManifestsDir = path.join(backupDir, 'r2', 'manifests');
-  if (!fs.existsSync(r2Mirror) || !fs.existsSync(r2ManifestsDir)) {
-    throw new Error('R2 backup mirror or manifests directory missing');
+function verifyStorageMirror() {
+  const storageMirror = path.join(backupDir, 'storage', 'latest');
+  const manifestsDir = path.join(backupDir, 'storage', 'manifests');
+  if (!fs.existsSync(storageMirror) || !fs.existsSync(manifestsDir)) {
+    throw new Error('Supabase Storage backup mirror or manifests directory missing');
   }
 
-  const manifests = fs.readdirSync(r2ManifestsDir).filter((f) => f.endsWith('.sha256')).sort().reverse();
+  const manifests = fs.readdirSync(manifestsDir).filter((f) => f.endsWith('.sha256')).sort().reverse();
   if (manifests.length === 0) {
-    throw new Error('No R2 inventory manifest found');
+    throw new Error('No Storage inventory manifest found');
   }
 
-  const latestManifest = path.join(r2ManifestsDir, manifests[0]);
+  const latestManifest = path.join(manifestsDir, manifests[0]);
   const lines = fs
     .readFileSync(latestManifest, 'utf8')
     .split(/\r?\n/)
@@ -85,36 +82,36 @@ function verifyR2Mirror() {
     const match = line.match(/^([a-f0-9]{64})\s+\*?\.?\/?(.*)$/i);
     if (!match) continue;
     const [, expectedHash, relPath] = match;
-    const fullPath = path.join(r2Mirror, relPath);
+    const fullPath = path.join(storageMirror, relPath);
     if (!fs.existsSync(fullPath)) {
-      throw new Error(`Missing R2 mirrored file: ${relPath}`);
+      throw new Error(`Missing Storage mirrored file: ${relPath}`);
     }
     const actualHash = sha256File(fullPath);
     if (actualHash !== expectedHash.toLowerCase()) {
-      throw new Error(`Checksum mismatch for R2 file ${relPath}`);
+      throw new Error(`Checksum mismatch for Storage file ${relPath}`);
     }
   }
 
-  console.log(`OK: R2 mirror verified (${lines.length} objects matched ${manifests[0]})`);
+  console.log(`OK: Supabase Storage mirror verified (${lines.length} objects matched ${manifests[0]})`);
 
   if (snapshotPath) {
     const snap = JSON.parse(fs.readFileSync(path.resolve(snapshotPath), 'utf8'));
-    const attachments = snap?.tables?.attachments ?? [];
-    const missing = attachments.filter(
-      (a) => !fs.existsSync(path.join(r2Mirror, a.storage_key))
+    const files = snap?.tables?.service_files ?? [];
+    const missing = files.filter(
+      (f) => !fs.existsSync(path.join(storageMirror, f.storage_path))
     );
     if (missing.length > 0) {
       throw new Error(
-        `Snapshot parity failure: ${missing.length} DB attachment keys missing from R2 mirror`
+        `Snapshot parity failure: ${missing.length} DB service_files keys missing from Storage mirror`
       );
     }
-    console.log(`OK: All ${attachments.length} DB attachment keys verified in R2 mirror`);
+    console.log(`OK: All ${files.length} DB service_files keys verified in Storage mirror`);
   }
 }
 
 try {
   verifyPostgresBackups();
-  verifyR2Mirror();
+  verifyStorageMirror();
   console.log('ALL BACKUP VERIFICATION CHECKS PASSED');
 } catch (err) {
   console.error('BACKUP VERIFICATION FAILED:', err.message);

@@ -1,8 +1,7 @@
-﻿# ZERO BASE — Windows PowerShell Full Backup & Verification Runner
+﻿# ZERO BASE — Windows PowerShell Full Backup & Verification Runner (Free Plan)
 $ErrorActionPreference = "Stop"
 
 $BackupDir = if ($env:BACKUP_DIR) { $env:BACKUP_DIR } else { ".\backups" }
-$RetentionDays = if ($env:BACKUP_RETENTION_DAYS) { [int]$env:BACKUP_RETENTION_DAYS } else { 30 }
 $Timestamp = (Get-Date).ToUniversalTime().ToString("yyyyMMddTHHmmssZ")
 $LogFile = Join-Path $BackupDir "backup.log"
 
@@ -15,9 +14,7 @@ function Write-BackupLog($Message) {
 }
 
 if (-not $env:SUPABASE_DB_URL) { throw "SUPABASE_DB_URL is required" }
-if (-not $env:R2_ACCOUNT_ID -or -not $env:R2_ACCESS_KEY_ID -or -not $env:R2_SECRET_ACCESS_KEY -or -not $env:R2_BUCKET_NAME) {
-  throw "R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and R2_BUCKET_NAME are required"
-}
+if (-not $env:SUPABASE_ANON_KEY) { throw "SUPABASE_ANON_KEY is required" }
 
 $PgOutDir = Join-Path $BackupDir "postgres\$Timestamp"
 New-Item -ItemType Directory -Force -Path $PgOutDir | Out-Null
@@ -41,28 +38,12 @@ $size = (Get-Item $DumpFile).Length
   verified = $true
 } | ConvertTo-Json | Out-File -FilePath (Join-Path $PgOutDir "manifest.json") -Encoding utf8
 
-Write-BackupLog "Starting R2 sync..."
-$R2Mirror = Join-Path $BackupDir "r2\latest"
-$R2Manifests = Join-Path $BackupDir "r2\manifests"
-New-Item -ItemType Directory -Force -Path $R2Mirror, $R2Manifests | Out-Null
+Write-BackupLog "Starting Supabase Storage backup (zero-base-files)..."
+node .\scripts\backup-storage.mjs
+if ($LASTEXITCODE -ne 0) { throw "Supabase Storage backup failed" }
 
-$env:AWS_ACCESS_KEY_ID = $env:R2_ACCESS_KEY_ID
-$env:AWS_SECRET_ACCESS_KEY = $env:R2_SECRET_ACCESS_KEY
-$env:AWS_DEFAULT_REGION = "auto"
-$Endpoint = "https://$($env:R2_ACCOUNT_ID).r2.cloudflarestorage.com"
-
-aws s3 sync "s3://$($env:R2_BUCKET_NAME)/" "$R2Mirror/" --endpoint-url "$Endpoint" --no-progress
-if ($LASTEXITCODE -ne 0) { throw "R2 sync failed" }
-
-$ManifestFile = Join-Path $R2Manifests "r2-inventory-$Timestamp.sha256"
-Get-ChildItem -Path $R2Mirror -Recurse -File | Sort-Object FullName | ForEach-Object {
-  $rel = $_.FullName.Substring($R2Mirror.Length + 1).Replace('\', '/')
-  $h = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash.ToLower()
-  "$h  ./$rel"
-} | Out-File -FilePath $ManifestFile -Encoding ascii
-
-Write-BackupLog "Running Node verification..."
+Write-BackupLog "Running integrity verification..."
 node .\scripts\verify-backup.mjs --backup-dir "$BackupDir"
 if ($LASTEXITCODE -ne 0) { throw "Backup verification failed" }
 
-Write-BackupLog "SUCCESS: Full PostgreSQL + R2 backup verified."
+Write-BackupLog "SUCCESS: Full PostgreSQL + Supabase Storage backup verified."

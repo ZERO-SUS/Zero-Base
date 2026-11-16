@@ -3,6 +3,7 @@ set -euo pipefail
 
 # ZERO BASE — PostgreSQL Restore Script
 # IMPORTANT: Always test restoring into a separate staging database first!
+# Never overwrite production data without explicit confirmation.
 # Usage: TARGET_DB_URL="postgresql://..." ./scripts/restore-db.sh ./backups/postgres/<timestamp>/zero-base.dump
 
 DUMP_FILE="${1:?Usage: $0 <path-to-zero-base.dump>}"
@@ -21,7 +22,12 @@ fi
 echo "Verifying archive table of contents..."
 pg_restore --list "${DUMP_FILE}" > /dev/null
 
-echo "Restoring into target PostgreSQL database..."
+read -r -p "WARNING: This will overwrite tables in TARGET_DB_URL. Type RESTORE to continue: " CONFIRM
+if [[ "${CONFIRM}" != "RESTORE" ]]; then
+  echo "Restore cancelled."
+  exit 1
+fi
+
 pg_restore \
   --clean \
   --if-exists \
