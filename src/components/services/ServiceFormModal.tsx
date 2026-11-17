@@ -995,7 +995,7 @@ export function ServiceFormModal({
       }
     } catch (err) {
       const msg =
-        err instanceof ApiError
+        err instanceof ApiError || (err instanceof Error && err.message)
           ? err.message
           : "Photo couldn't be uploaded. Please check your connection and tap Retry.";
       if (!isEdit) {

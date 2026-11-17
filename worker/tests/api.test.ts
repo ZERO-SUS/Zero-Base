@@ -367,6 +367,20 @@ describe('ZERO BASE Worker API Integration & Security Suite', () => {
       'https://zero-base.pages.dev'
     );
 
+    const putPreflight = await app.request(
+      '/api/drafts/active',
+      {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'https://zero-base.pages.dev',
+          'Access-Control-Request-Method': 'PUT',
+        },
+      },
+      env
+    );
+    expect(putPreflight.status).toBe(204);
+    expect(putPreflight.headers.get('Access-Control-Allow-Methods')).toContain('PUT');
+
     expect(escapeCsvCell('=CMD("calc")')).toBe('"\'=CMD(""calc"")"');
     expect(computeReminderCategory({ status: 'cancelled', due_date: '2026-11-16' }, '2026-11-16')).toBe('Cancelled');
     expect(computeReminderCategory({ status: 'completed', due_date: '2026-11-15' }, '2026-11-16')).toBe('Completed');

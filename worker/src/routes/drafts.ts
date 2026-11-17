@@ -150,6 +150,19 @@ draftRoutes.put('/drafts/active', async (c) => {
     .single();
 
   if (insErr || !inserted) {
+    // Handle concurrent first-insert race on unique active-draft index
+    if (insErr?.code === '23505') {
+      const { data: raced } = await supabase
+        .from('service_drafts')
+        .update({ draft_payload: cleanPayload })
+        .eq('owner_id', user.id)
+        .eq('status', 'active')
+        .select('id, owner_id, draft_payload, status, idempotency_key, created_at, updated_at')
+        .maybeSingle();
+      if (raced) {
+        return c.json({ draft: raced });
+      }
+    }
     console.error(`[${c.get('requestId')}] Draft insert failed:`, insErr?.message);
     return c.json({ error: "Your changes couldn't be saved. Please try again." }, 500);
   }

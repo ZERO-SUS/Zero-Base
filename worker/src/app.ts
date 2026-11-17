@@ -56,7 +56,7 @@ export function createApp(overrides?: ServiceOverrides): Hono<AppBindings> {
         const normalized = origin.replace(/\/$/, '');
         return allowedList.includes(normalized) ? origin : '';
       },
-      allowMethods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
       allowHeaders: ['Content-Type', 'Authorization'],
       exposeHeaders: ['Content-Disposition', 'X-Request-Id'],
       maxAge: 600,
