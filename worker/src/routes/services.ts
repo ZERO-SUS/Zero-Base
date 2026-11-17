@@ -1,5 +1,10 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
+import {
+  cartCategoryGroupInputSchema,
+  computeAndValidateCart,
+  type CartCategoryGroupInput,
+} from '../lib/cartPricing';
 import { extractYearMonthFromDate } from '../lib/timezone';
 import type { AppBindings } from '../types';
 
@@ -56,11 +61,16 @@ const unifiedCreateSchema = z
       .optional()
       .nullable(),
     service_date: z.string().regex(dateRegex, 'service_date must be YYYY-MM-DD'),
-    service_type: z.string().trim().min(1, 'Service type is required').max(120),
+    // Itemized cart fields
+    cart_groups: z.array(cartCategoryGroupInputSchema).optional(),
+    discount_type: z.enum(['fixed', 'percentage']).default('fixed'),
+    discount_value: z.number().nonnegative().max(100_000_000).optional(),
+    // Backward-compatible legacy single-service fields
+    service_type: z.string().trim().min(1).max(120).optional(),
     tank_details: z.string().trim().max(150).optional().nullable(),
+    price: z.number().nonnegative().max(10_000_000).optional(),
+    discount: z.number().nonnegative().max(10_000_000).optional(),
     description: z.string().trim().max(1000).optional().nullable(),
-    price: z.number().nonnegative().max(10_000_000),
-    discount: z.number().nonnegative().max(10_000_000).default(0),
     notes: z.string().trim().max(3000).optional().nullable(),
     idempotency_key: z.string().trim().max(120).optional().nullable(),
     initial_payment: z
@@ -85,10 +95,14 @@ const unifiedCreateSchema = z
   .refine((d) => Boolean(d.customer_id) || Boolean(d.new_customer), {
     message: 'Either an existing customer_id or new_customer details must be provided',
   })
-  .refine((d) => d.discount <= d.price, {
-    message: 'Discount cannot exceed price',
-    path: ['discount'],
-  })
+  .refine(
+    (d) =>
+      (Array.isArray(d.cart_groups) && d.cart_groups.length > 0) ||
+      (Boolean(d.service_type) && d.price !== undefined),
+    {
+      message: 'Provide cart_groups or service_type and price',
+    }
+  )
   .refine((d) => !d.reminder?.enabled || Boolean(d.reminder?.due_date), {
     message: 'Reminder date is required when reminder is enabled',
     path: ['reminder', 'due_date'],
@@ -96,6 +110,9 @@ const unifiedCreateSchema = z
 
 const updateServiceSchema = z.object({
   service_date: z.string().regex(dateRegex, 'service_date must be YYYY-MM-DD').optional(),
+  cart_groups: z.array(cartCategoryGroupInputSchema).min(1).optional(),
+  discount_type: z.enum(['fixed', 'percentage']).optional(),
+  discount_value: z.number().nonnegative().max(100_000_000).optional(),
   service_type: z.string().trim().min(1).max(120).optional(),
   tank_details: z.string().trim().max(150).optional().nullable(),
   description: z.string().trim().max(1000).optional().nullable(),
@@ -105,7 +122,35 @@ const updateServiceSchema = z.object({
   notes: z.string().trim().max(3000).optional().nullable(),
 });
 
-// Unified Add Service endpoint (Existing OR New Customer + Service + Optional Payment + Optional Reminder)
+async function getActiveCategorySet(
+  supabase: AppBindings['Variables']['supabase']
+): Promise<Set<string> | null> {
+  const { data } = await supabase
+    .from('business_settings')
+    .select('service_types, service_categories')
+    .eq('singleton_key', true)
+    .maybeSingle();
+
+  if (!data) return null;
+  const row = data as {
+    service_types?: string[];
+    service_categories?: Array<{ name: string; active: boolean }>;
+  };
+
+  if (Array.isArray(row.service_categories) && row.service_categories.length > 0) {
+    return new Set(
+      row.service_categories
+        .filter((c) => c.active)
+        .map((c) => c.name.trim().toLowerCase())
+    );
+  }
+  if (Array.isArray(row.service_types) && row.service_types.length > 0) {
+    return new Set(row.service_types.map((t) => t.trim().toLowerCase()));
+  }
+  return null;
+}
+
+// Unified Add Service / Checkout endpoint (supports Itemized Cart + Backward-compatible single service)
 serviceRoutes.post('/services/unified', async (c) => {
   const supabase = c.get('supabase');
 
@@ -123,7 +168,52 @@ serviceRoutes.post('/services/unified', async (c) => {
 
   const p = parsed.data;
 
-  // Duplicate check before creating a new customer (unless explicitly confirmed)
+  const rawGroups: CartCategoryGroupInput[] =
+    p.cart_groups && p.cart_groups.length > 0
+      ? p.cart_groups
+      : [
+          {
+            category_name: p.service_type!,
+            pricing_mode: 'itemized',
+            category_subtotal: p.price!,
+            items: [
+              {
+                item_name: p.tank_details || p.service_type!,
+                capacity_litres: null,
+                quantity: 1,
+                unit_price: p.price!,
+                description: p.description || null,
+              },
+            ],
+          },
+        ];
+
+  const cartCheck = computeAndValidateCart({
+    groups: rawGroups,
+    discount_type: p.discount_type,
+    discount_value: p.discount_value ?? p.discount ?? 0,
+  });
+
+  if (!cartCheck.ok) {
+    return c.json({ error: cartCheck.error }, 400);
+  }
+
+  // Enforce active category settings on new service creation
+  const activeSet = await getActiveCategorySet(supabase);
+  if (activeSet) {
+    for (const grp of cartCheck.data.groups) {
+      if (!activeSet.has(grp.category_name.toLowerCase())) {
+        return c.json(
+          {
+            error: `Category "${grp.category_name}" is inactive or not configured in Settings.`,
+          },
+          400
+        );
+      }
+    }
+  }
+
+  // Duplicate check before creating a new customer
   if (!p.customer_id && p.new_customer && !p.new_customer.allow_duplicate) {
     const dupRes = await supabase.rpc('find_similar_customers', {
       p_phone: p.new_customer.phone_number,
@@ -144,7 +234,7 @@ serviceRoutes.post('/services/unified', async (c) => {
     }
   }
 
-  const { data, error } = await supabase.rpc('create_unified_service', {
+  const { data, error } = await supabase.rpc('create_cart_service', {
     p_customer_id: p.customer_id ?? null,
     p_customer_full_name: p.new_customer?.full_name ?? null,
     p_customer_phone: p.new_customer?.phone_number ?? null,
@@ -153,11 +243,10 @@ serviceRoutes.post('/services/unified', async (c) => {
     p_customer_area: p.new_customer?.area ?? null,
     p_customer_notes: p.new_customer?.notes ?? null,
     p_service_date: p.service_date,
-    p_service_type: p.service_type,
-    p_tank_details: p.tank_details ?? null,
+    p_cart_groups: cartCheck.data.groups,
+    p_discount_type: cartCheck.data.discount_type,
+    p_discount_value: cartCheck.data.discount_value,
     p_description: p.description ?? null,
-    p_price: p.price,
-    p_discount: p.discount,
     p_notes: p.notes ?? null,
     p_idempotency_key: p.idempotency_key ?? null,
     p_payment_amount: p.initial_payment?.amount ?? null,
@@ -171,7 +260,7 @@ serviceRoutes.post('/services/unified', async (c) => {
   });
 
   if (error || !data) {
-    return c.json({ error: error?.message || 'Failed to save unified service record' }, 500);
+    return c.json({ error: error?.message || 'Failed to save service checkout' }, 500);
   }
 
   const res = data as {
@@ -201,6 +290,7 @@ serviceRoutes.get('/archive/summary', async (c) => {
       customer_id,
       service_date,
       service_type,
+      service_categories_snapshot,
       tank_details,
       total_amount,
       amount_paid,
@@ -221,7 +311,6 @@ serviceRoutes.get('/archive/summary', async (c) => {
     .order('created_at', { ascending: false });
 
   if (paymentStatus) query = query.eq('payment_status', paymentStatus);
-  if (serviceType) query = query.eq('service_type', serviceType);
 
   const { data, error } = await query;
   if (error) {
@@ -233,6 +322,7 @@ serviceRoutes.get('/archive/summary', async (c) => {
     customer_id: string;
     service_date: string;
     service_type: string;
+    service_categories_snapshot?: string[];
     tank_details: string | null;
     total_amount: number;
     amount_paid: number;
@@ -248,15 +338,26 @@ serviceRoutes.get('/archive/summary', async (c) => {
     };
   }>;
 
+  if (serviceType) {
+    services = services.filter(
+      (s) =>
+        s.service_type === serviceType ||
+        (Array.isArray(s.service_categories_snapshot) &&
+          s.service_categories_snapshot.includes(serviceType))
+    );
+  }
+
   if (q.length > 0) {
     services = services.filter((s) => {
       const cust = s.customers;
+      const cats = (s.service_categories_snapshot ?? []).join(' ').toLowerCase();
       return (
         cust.full_name.toLowerCase().includes(q) ||
         cust.phone_number.toLowerCase().includes(q) ||
         cust.customer_code.toLowerCase().includes(q) ||
         (cust.area ?? '').toLowerCase().includes(q) ||
-        s.service_type.toLowerCase().includes(q)
+        s.service_type.toLowerCase().includes(q) ||
+        cats.includes(q)
       );
     });
   }
@@ -340,9 +441,6 @@ serviceRoutes.get('/services/history', async (c) => {
   if (!includeArchived) {
     query = query.is('archived_at', null);
   }
-  if (serviceType) {
-    query = query.eq('service_type', serviceType);
-  }
   if (paymentStatus) {
     query = query.eq('payment_status', paymentStatus);
   }
@@ -368,6 +466,8 @@ serviceRoutes.get('/services/history', async (c) => {
   let services = (data ?? []) as Array<
     Record<string, unknown> & {
       service_date: string;
+      service_type: string;
+      service_categories_snapshot?: string[];
       customers: {
         id: string;
         customer_code: string;
@@ -380,9 +480,19 @@ serviceRoutes.get('/services/history', async (c) => {
     }
   >;
 
+  if (serviceType) {
+    services = services.filter(
+      (s) =>
+        s.service_type === serviceType ||
+        (Array.isArray(s.service_categories_snapshot) &&
+          s.service_categories_snapshot.includes(serviceType))
+    );
+  }
+
   if (q.length > 0) {
     services = services.filter((s) => {
       const cust = s.customers;
+      const cats = (s.service_categories_snapshot ?? []).join(' ').toLowerCase();
       return (
         cust.full_name.toLowerCase().includes(q) ||
         cust.phone_number.toLowerCase().includes(q) ||
@@ -390,7 +500,8 @@ serviceRoutes.get('/services/history', async (c) => {
         cust.customer_code.toLowerCase().includes(q) ||
         cust.address.toLowerCase().includes(q) ||
         (cust.area ?? '').toLowerCase().includes(q) ||
-        cust.id.toLowerCase() === q
+        cust.id.toLowerCase() === q ||
+        cats.includes(q)
       );
     });
   }
@@ -436,51 +547,106 @@ serviceRoutes.get('/services/:id', async (c) => {
     return c.json({ error: 'Invalid service ID format' }, 400);
   }
 
-  const [serviceRes, paymentsRes, filesRes, remindersRes] = await Promise.all([
-    supabase
-      .from('services')
-      .select(
+  const [serviceRes, groupsRes, itemsRes, paymentsRes, filesRes, remindersRes] =
+    await Promise.all([
+      supabase
+        .from('services')
+        .select(
+          `
+          *,
+          customers (
+            id,
+            customer_code,
+            full_name,
+            phone_number,
+            alternate_phone,
+            address,
+            area
+          )
         `
-        *,
-        customers (
-          id,
-          customer_code,
-          full_name,
-          phone_number,
-          alternate_phone,
-          address,
-          area
         )
-      `
-      )
-      .eq('id', serviceId)
-      .single(),
-    supabase
-      .from('payments')
-      .select('*')
-      .eq('service_id', serviceId)
-      .order('payment_date', { ascending: false })
-      .order('created_at', { ascending: false }),
-    supabase
-      .from('service_files')
-      .select('*')
-      .eq('service_id', serviceId)
-      .is('archived_at', null)
-      .order('uploaded_at', { ascending: false }),
-    supabase
-      .from('reminders')
-      .select('*')
-      .eq('service_id', serviceId)
-      .is('archived_at', null)
-      .order('created_at', { ascending: false }),
-  ]);
+        .eq('id', serviceId)
+        .single(),
+      supabase
+        .from('service_category_groups')
+        .select('*')
+        .eq('service_id', serviceId)
+        .order('display_order', { ascending: true }),
+      supabase
+        .from('service_items')
+        .select('*')
+        .eq('service_id', serviceId)
+        .order('display_order', { ascending: true }),
+      supabase
+        .from('payments')
+        .select('*')
+        .eq('service_id', serviceId)
+        .order('payment_date', { ascending: false })
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('service_files')
+        .select('*')
+        .eq('service_id', serviceId)
+        .is('archived_at', null)
+        .order('uploaded_at', { ascending: false }),
+      supabase
+        .from('reminders')
+        .select('*')
+        .eq('service_id', serviceId)
+        .is('archived_at', null)
+        .order('created_at', { ascending: false }),
+    ]);
 
   if (serviceRes.error || !serviceRes.data) {
     return c.json({ error: 'Service record not found' }, 404);
   }
 
+  const rawGroups = (groupsRes.data ?? []) as Array<
+    Record<string, unknown> & { id: string }
+  >;
+  const rawItems = (itemsRes.data ?? []) as Array<
+    Record<string, unknown> & { category_group_id: string }
+  >;
+
+  let categoryGroups: Array<Record<string, unknown>> = rawGroups.map((g) => ({
+    ...g,
+    items: rawItems.filter((item) => item.category_group_id === g.id),
+  }));
+
+  // Backward-compatible representation for historical single-item records
+  if (categoryGroups.length === 0) {
+    const s = serviceRes.data as Record<string, unknown>;
+    const legacySubtotal = Number(s.subtotal_amount || s.price || s.total_amount || 0);
+    categoryGroups = [
+      {
+        id: `legacy-${serviceId}`,
+        service_id: serviceId,
+        category_name: String(s.service_type || 'Service'),
+        pricing_mode: 'itemized',
+        category_subtotal: legacySubtotal,
+        display_order: 0,
+        items: [
+          {
+            id: `legacy-item-${serviceId}`,
+            service_id: serviceId,
+            category_group_id: `legacy-${serviceId}`,
+            category_name: String(s.service_type || 'Service'),
+            item_name: (s.tank_details as string) || String(s.service_type || 'Service'),
+            capacity_litres: null,
+            quantity: 1,
+            unit_price: legacySubtotal,
+            line_total: legacySubtotal,
+            description: (s.description as string) || null,
+            display_order: 0,
+          },
+        ],
+      },
+    ];
+  }
+
   return c.json({
     service: serviceRes.data,
+    category_groups: categoryGroups,
     payments: paymentsRes.data ?? [],
     files: filesRes.data ?? [],
     reminders: remindersRes.data ?? [],
@@ -639,7 +805,7 @@ serviceRoutes.patch('/services/:id', async (c) => {
 
   const { data: existing, error: findErr } = await supabase
     .from('services')
-    .select('id, price, discount')
+    .select('*')
     .eq('id', serviceId)
     .single();
 
@@ -647,6 +813,64 @@ serviceRoutes.patch('/services/:id', async (c) => {
     return c.json({ error: 'Service record not found' }, 404);
   }
 
+  // Full Cart Edit path
+  if (parsed.data.cart_groups && parsed.data.cart_groups.length > 0) {
+    const cartCheck = computeAndValidateCart({
+      groups: parsed.data.cart_groups,
+      discount_type: parsed.data.discount_type ?? existing.discount_type ?? 'fixed',
+      discount_value: parsed.data.discount_value ?? Number(existing.discount_value ?? 0),
+    });
+
+    if (!cartCheck.ok) {
+      return c.json({ error: cartCheck.error }, 400);
+    }
+
+    // Preserve historical categories already on this service; block adding newly deactivated ones
+    const activeSet = await getActiveCategorySet(supabase);
+    if (activeSet) {
+      const existingCats = new Set<string>(
+        (Array.isArray(existing.service_categories_snapshot)
+          ? existing.service_categories_snapshot
+          : [existing.service_type]
+        ).map((n: string) => String(n).trim().toLowerCase())
+      );
+      for (const grp of cartCheck.data.groups) {
+        const key = grp.category_name.toLowerCase();
+        if (!activeSet.has(key) && !existingCats.has(key)) {
+          return c.json(
+            {
+              error: `Category "${grp.category_name}" is inactive and cannot be newly added.`,
+            },
+            400
+          );
+        }
+      }
+    }
+
+    const { data: rpcRes, error: rpcErr } = await supabase.rpc('update_cart_service', {
+      p_service_id: serviceId,
+      p_service_date: parsed.data.service_date ?? existing.service_date,
+      p_cart_groups: cartCheck.data.groups,
+      p_discount_type: cartCheck.data.discount_type,
+      p_discount_value: cartCheck.data.discount_value,
+      p_description:
+        parsed.data.description !== undefined ? parsed.data.description : existing.description,
+      p_notes: parsed.data.notes !== undefined ? parsed.data.notes : existing.notes,
+      p_next_due_date:
+        parsed.data.next_due_date !== undefined
+          ? parsed.data.next_due_date
+          : existing.next_due_date,
+    });
+
+    if (rpcErr || !rpcRes) {
+      return c.json({ error: rpcErr?.message || 'Failed to update service cart' }, 500);
+    }
+
+    const updated = (rpcRes as { service: Record<string, unknown> }).service;
+    return c.json({ service: updated });
+  }
+
+  // Legacy scalar patch path
   const nextPrice = parsed.data.price ?? Number(existing.price);
   const nextDiscount = parsed.data.discount ?? Number(existing.discount);
   if (nextDiscount > nextPrice) {

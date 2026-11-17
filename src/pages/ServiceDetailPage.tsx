@@ -23,12 +23,14 @@ import type {
   PaymentMethod,
   PaymentRecord,
   ReminderRecord,
+  ServiceCategoryGroup,
   ServiceFileRecord,
   ServiceRecord,
 } from '../types/domain';
 
 interface ServiceDetailResponse {
   service: ServiceRecord;
+  category_groups?: ServiceCategoryGroup[];
   payments: PaymentRecord[];
   files: ServiceFileRecord[];
   reminders: ReminderRecord[];
@@ -193,7 +195,8 @@ export function ServiceDetailPage() {
 
   if (!data) return null;
 
-  const { service, payments, files } = data;
+  const { service, category_groups = [], payments, files } = data;
+  const subtotalAmount = Number(service.subtotal_amount ?? service.price ?? service.total_amount);
   const outstanding = Number(
     service.balance_amount ?? Math.max(0, Number(service.total_amount) - Number(service.amount_paid))
   );
@@ -282,15 +285,20 @@ export function ServiceDetailPage() {
       {/* Financial Summary */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
         <div className="zb-card p-4">
-          <p className="text-[11px] uppercase tracking-wider text-text-muted">Price</p>
-          <p className="mt-1 text-lg font-semibold">{formatCurrency(service.price, sym)}</p>
+          <p className="text-[11px] uppercase tracking-wider text-text-muted">Subtotal</p>
+          <p className="mt-1 text-lg font-semibold">{formatCurrency(subtotalAmount, sym)}</p>
         </div>
         <div className="zb-card p-4">
-          <p className="text-[11px] uppercase tracking-wider text-text-muted">Discount</p>
+          <p className="text-[11px] uppercase tracking-wider text-text-muted">
+            Discount
+            {service.discount_type === 'percentage' && service.discount_value
+              ? ` (${service.discount_value}%)`
+              : ''}
+          </p>
           <p className="mt-1 text-lg font-semibold">{formatCurrency(service.discount, sym)}</p>
         </div>
         <div className="zb-card p-4">
-          <p className="text-[11px] uppercase tracking-wider text-text-muted">Total Billed</p>
+          <p className="text-[11px] uppercase tracking-wider text-text-muted">Grand Total</p>
           <p className="mt-1 text-lg font-semibold">{formatCurrency(service.total_amount, sym)}</p>
         </div>
         <div className="zb-card p-4">
@@ -304,6 +312,108 @@ export function ServiceDetailPage() {
           <p className={`mt-1 text-lg font-semibold ${outstanding > 0 ? 'text-error' : ''}`}>
             {formatCurrency(outstanding, sym)}
           </p>
+        </div>
+      </div>
+
+      {/* Itemized Bill Breakdown */}
+      <div className="zb-card overflow-hidden">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-5 py-3.5">
+          <div>
+            <h2 className="text-sm font-semibold text-text-primary">
+              Itemized Service Bill Breakdown
+            </h2>
+            <p className="text-xs text-text-secondary">
+              {category_groups.length} {category_groups.length === 1 ? 'category' : 'categories'} in
+              this visit
+            </p>
+          </div>
+          {service.service_categories_snapshot && service.service_categories_snapshot.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {service.service_categories_snapshot.map((cat) => (
+                <Badge key={cat} variant="neutral">
+                  {cat}
+                </Badge>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="divide-y divide-border">
+          {category_groups.map((grp) => (
+            <div key={grp.id} className="p-5 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-semibold text-text-primary">{grp.category_name}</h3>
+                  <Badge variant={grp.pricing_mode === 'category_total' ? 'accent' : 'neutral'}>
+                    {grp.pricing_mode === 'category_total' ? 'Combined Price' : 'Per Item'}
+                  </Badge>
+                </div>
+                <span className="text-sm font-semibold text-text-primary tabular-nums">
+                  {formatCurrency(grp.category_subtotal, sym)}
+                </span>
+              </div>
+
+              <div className="overflow-x-auto rounded-lg border border-border">
+                <table className="w-full text-left text-xs">
+                  <thead className="border-b border-border bg-bg text-[11px] uppercase tracking-wider text-text-muted">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">Item / Work</th>
+                      <th className="px-3 py-2 font-medium">Capacity</th>
+                      <th className="px-3 py-2 font-medium text-right">Qty</th>
+                      <th className="px-3 py-2 font-medium text-right">Unit Price</th>
+                      <th className="px-3 py-2 font-medium text-right">Line Total</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {(grp.items || []).map((item) => (
+                      <tr key={item.id}>
+                        <td className="px-3 py-2">
+                          <p className="font-medium text-text-primary">
+                            {item.item_name || grp.category_name}
+                          </p>
+                          {item.description && (
+                            <p className="text-[11px] text-text-secondary">{item.description}</p>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-text-secondary tabular-nums">
+                          {item.capacity_litres ? `${item.capacity_litres} L` : '—'}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums">{item.quantity}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-text-secondary">
+                          {grp.pricing_mode === 'category_total'
+                            ? 'Combined'
+                            : formatCurrency(item.unit_price, sym)}
+                        </td>
+                        <td className="px-3 py-2 text-right font-medium tabular-nums">
+                          {grp.pricing_mode === 'category_total'
+                            ? 'Included'
+                            : formatCurrency(item.line_total, sym)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="border-t border-border bg-bg/60 px-5 py-3 flex flex-wrap items-center justify-end gap-6 text-xs">
+          <span className="text-text-secondary">
+            Subtotal:{' '}
+            <strong className="text-text-primary tabular-nums">
+              {formatCurrency(subtotalAmount, sym)}
+            </strong>
+          </span>
+          <span className="text-text-secondary">
+            Discount:{' '}
+            <strong className="text-text-primary tabular-nums">
+              -{formatCurrency(service.discount, sym)}
+            </strong>
+          </span>
+          <span className="text-sm font-semibold text-text-primary tabular-nums">
+            Grand Total: {formatCurrency(service.total_amount, sym)}
+          </span>
         </div>
       </div>
 
@@ -436,6 +546,7 @@ export function ServiceDetailPage() {
         open={editModalOpen}
         onClose={() => setEditModalOpen(false)}
         existingService={service}
+        existingGroups={category_groups}
         onSaved={() => void loadDetail()}
       />
 

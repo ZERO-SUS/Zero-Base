@@ -400,14 +400,30 @@ export function CustomerProfilePage() {
                             className="flex flex-col gap-2 px-4 py-3 transition hover:bg-bg sm:flex-row sm:items-center sm:justify-between"
                           >
                             <div>
-                              <p className="text-sm font-medium text-text-primary">
+                              <div className="flex flex-wrap items-center gap-1.5 text-sm font-medium text-text-primary">
                                 <span className="text-accent font-semibold">
                                   {formatDayMonth(srv.service_date)}
-                                </span>{' '}
-                                — {srv.service_type}
-                                {srv.tank_details ? ` (${srv.tank_details})` : ''}
-                              </p>
-                              <p className="text-[11px] text-text-muted">
+                                </span>
+                                <span className="text-text-muted">—</span>
+                                {srv.service_categories_snapshot &&
+                                srv.service_categories_snapshot.length > 0 ? (
+                                  <span className="inline-flex flex-wrap items-center gap-1">
+                                    {srv.service_categories_snapshot.map((cat) => (
+                                      <Badge key={cat} variant="neutral">
+                                        {cat}
+                                      </Badge>
+                                    ))}
+                                  </span>
+                                ) : (
+                                  <span>{srv.service_type}</span>
+                                )}
+                                {srv.tank_details && (
+                                  <span className="text-xs text-text-secondary">
+                                    ({srv.tank_details})
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-[11px] text-text-muted mt-0.5">
                                 Recorded (IST): {formatDateTimeIst(srv.created_at)}
                               </p>
                             </div>

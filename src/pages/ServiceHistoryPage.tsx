@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Plus, Search } from 'lucide-react';
 import { ServiceFormModal } from '../components/services/ServiceFormModal';
-import { PaymentStatusBadge } from '../components/ui/Badge';
+import { Badge, PaymentStatusBadge } from '../components/ui/Badge';
 import { EmptyState, ErrorBanner, SkeletonCard } from '../components/ui/Feedback';
 import { useAuth } from '../context/AuthContext';
 import { apiFetch, ApiError } from '../lib/api';
@@ -310,14 +310,25 @@ export function ServiceHistoryPage() {
                                         {formatCurrency(srv.total_amount, sym)}
                                       </span>
                                     </div>
-                                    <p className="mt-0.5 text-xs text-text-secondary">
-                                      {srv.service_type}
-                                      {srv.tank_details ? ` • ${srv.tank_details}` : ''}
-                                      {srv.customers?.area ? ` • ${srv.customers.area}` : ''}
-                                      {srv.customers?.phone_number
-                                        ? ` • ${srv.customers.phone_number}`
-                                        : ''}
-                                    </p>
+                                    <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-text-secondary">
+                                      {srv.service_categories_snapshot &&
+                                      srv.service_categories_snapshot.length > 0 ? (
+                                        srv.service_categories_snapshot.map((cat) => (
+                                          <Badge key={cat} variant="neutral">
+                                            {cat}
+                                          </Badge>
+                                        ))
+                                      ) : (
+                                        <span>{srv.service_type}</span>
+                                      )}
+                                      <span>
+                                        {srv.tank_details ? ` • ${srv.tank_details}` : ''}
+                                        {srv.customers?.area ? ` • ${srv.customers.area}` : ''}
+                                        {srv.customers?.phone_number
+                                          ? ` • ${srv.customers.phone_number}`
+                                          : ''}
+                                      </span>
+                                    </div>
                                   </div>
 
                                   <div className="flex items-center gap-2.5 shrink-0">

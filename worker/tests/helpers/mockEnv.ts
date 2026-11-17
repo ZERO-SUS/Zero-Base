@@ -14,6 +14,8 @@ export interface InMemoryDb {
   profiles: Array<Record<string, unknown>>;
   customers: Array<Record<string, unknown>>;
   services: Array<Record<string, unknown>>;
+  service_category_groups: Array<Record<string, unknown>>;
+  service_items: Array<Record<string, unknown>>;
   payments: Array<Record<string, unknown>>;
   service_files: Array<Record<string, unknown>>;
   reminders: Array<Record<string, unknown>>;
@@ -58,6 +60,8 @@ export function createInitialDb(): InMemoryDb {
     ],
     customers: [],
     services: [],
+    service_category_groups: [],
+    service_items: [],
     payments: [],
     service_files: [],
     reminders: [],
@@ -70,7 +74,18 @@ export function createInitialDb(): InMemoryDb {
         timezone: 'Asia/Kolkata',
         currency_code: 'INR',
         currency_symbol: '₹',
-        service_types: ['Overhead Tank Cleaning', 'Underground Sump Cleaning'],
+        service_types: [
+          'Overhead Tank Cleaning',
+          'Underground Sump Cleaning',
+          'Solar Panel Cleaning',
+          'Plumbing Services',
+        ],
+        service_categories: [
+          { name: 'Overhead Tank Cleaning', active: true, kind: 'tank' },
+          { name: 'Underground Sump Cleaning', active: true, kind: 'sump' },
+          { name: 'Solar Panel Cleaning', active: true, kind: 'solar' },
+          { name: 'Plumbing Services', active: true, kind: 'plumbing' },
+        ],
         default_reminder_months: 6,
       },
     ],
@@ -230,6 +245,15 @@ class MockQueryBuilder {
     return this;
   }
 
+  contains(col: string, vals: unknown[]) {
+    this.filters.push((r) => {
+      const target = r[col];
+      if (!Array.isArray(target)) return false;
+      return vals.every((v) => target.includes(v));
+    });
+    return this;
+  }
+
   gte(col: string, val: string) {
     this.filters.push((r) => String(r[col] ?? '') >= val);
     return this;
@@ -241,15 +265,30 @@ class MockQueryBuilder {
   }
 
   or(expr: string) {
-    const parts = expr.split(',').map((p) => p.trim());
+    // Split carefully outside braces/quotes
+    const parts = expr.split(/,(?![^{]*})/).map((p) => p.trim());
     this.filters.push((r) =>
       parts.some((p) => {
-        const m = p.match(/^([^.]+)\.ilike\.%(.+)%$/);
-        if (!m) return false;
-        const [, col, term] = m;
-        return String(r[col] ?? '')
-          .toLowerCase()
-          .includes(term.toLowerCase());
+        const ilikeMatch = p.match(/^([^.]+)\.ilike\.%(.+)%$/);
+        if (ilikeMatch) {
+          const [, col, term] = ilikeMatch;
+          return String(r[col] ?? '')
+            .toLowerCase()
+            .includes(term.toLowerCase());
+        }
+        const eqMatch = p.match(/^([^.]+)\.eq\.(.+)$/);
+        if (eqMatch) {
+          const [, col, term] = eqMatch;
+          return String(r[col] ?? '') === term;
+        }
+        const csMatch = p.match(/^([^.]+)\.cs\.\{(.+)\}$/);
+        if (csMatch) {
+          const [, col, inner] = csMatch;
+          const clean = inner.replace(/^"|"$/g, '').replace(/\\"/g, '"');
+          const arr = r[col];
+          return Array.isArray(arr) && arr.includes(clean);
+        }
+        return false;
       })
     );
     return this;
@@ -548,6 +587,295 @@ export function createTestHarness() {
         };
       }
 
+      if (name === 'create_cart_service') {
+        const p = params ?? {};
+        if (p.p_idempotency_key) {
+          const existing = db.services.find((s) => s.idempotency_key === p.p_idempotency_key);
+          if (existing) {
+            const cust = db.customers.find((c) => c.id === existing.customer_id);
+            const groups = db.service_category_groups.filter((g) => g.service_id === existing.id);
+            return { data: { customer: cust, service: existing, groups, deduplicated: true }, error: null };
+          }
+        }
+
+        let customer: Record<string, unknown>;
+        if (p.p_customer_id) {
+          const found = db.customers.find((c) => c.id === p.p_customer_id);
+          if (!found) return { data: null, error: { message: 'Customer not found' } };
+          customer = found;
+        } else {
+          customer = {
+            id: crypto.randomUUID(),
+            customer_code: `ZB-${String(db.customerSeq++).padStart(5, '0')}`,
+            full_name: p.p_customer_full_name,
+            phone_number: p.p_customer_phone,
+            alternate_phone: p.p_customer_alt_phone ?? null,
+            address: p.p_customer_address,
+            area: p.p_customer_area ?? null,
+            notes: p.p_customer_notes ?? null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            archived_at: null,
+          };
+          db.customers.push(customer);
+        }
+
+        const cartGroups = (p.p_cart_groups ?? []) as Array<Record<string, unknown>>;
+        const snapshot = cartGroups.map((g) => String(g.category_name));
+        const primaryServiceType =
+          snapshot.length <= 1
+            ? (snapshot[0] ?? 'Service')
+            : `${snapshot[0]} (+${snapshot.length - 1} more)`;
+
+        let subtotal = 0;
+        const summaryParts: string[] = [];
+        for (const grp of cartGroups) {
+          const mode = grp.pricing_mode === 'category_total' ? 'category_total' : 'itemized';
+          const items = (grp.items ?? []) as Array<Record<string, unknown>>;
+          if (mode === 'category_total') {
+            subtotal += Number(grp.category_subtotal ?? 0);
+          } else {
+            for (const it of items) {
+              subtotal += Number(it.quantity ?? 1) * Number(it.unit_price ?? 0);
+            }
+          }
+          for (const it of items) {
+            const label = String(it.item_name ?? grp.category_name);
+            const cap = it.capacity_litres ? ` ${it.capacity_litres}L` : '';
+            summaryParts.push(`${label}${cap} ×${it.quantity ?? 1}`);
+          }
+        }
+        subtotal = Math.round((subtotal + Number.EPSILON) * 100) / 100;
+        const discountType = p.p_discount_type === 'percentage' ? 'percentage' : 'fixed';
+        const discountVal = Number(p.p_discount_value ?? 0);
+        const discountAmt =
+          discountType === 'percentage'
+            ? Math.round((subtotal * (discountVal / 100) + Number.EPSILON) * 100) / 100
+            : Math.round((discountVal + Number.EPSILON) * 100) / 100;
+
+        const service: Record<string, unknown> = {
+          id: crypto.randomUUID(),
+          customer_id: customer.id,
+          service_date: p.p_service_date,
+          service_type: primaryServiceType,
+          tank_details: summaryParts.join(', ').slice(0, 150) || null,
+          description: p.p_description ?? null,
+          subtotal_amount: subtotal,
+          price: subtotal,
+          discount_type: discountType,
+          discount_value: discountVal,
+          discount: discountAmt,
+          service_categories_snapshot: snapshot,
+          next_due_date: p.p_reminder_enabled ? p.p_reminder_date : null,
+          notes: p.p_notes ?? null,
+          idempotency_key: p.p_idempotency_key ?? null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          archived_at: null,
+        };
+        db.services.push(service);
+        recalcServiceFinancials(db, String(service.id));
+
+        const persistedGroups: Array<Record<string, unknown>> = [];
+        cartGroups.forEach((grp, gIdx) => {
+          const mode = grp.pricing_mode === 'category_total' ? 'category_total' : 'itemized';
+          const items = (grp.items ?? []) as Array<Record<string, unknown>>;
+          const grpSubtotal =
+            mode === 'category_total'
+              ? Number(grp.category_subtotal ?? 0)
+              : items.reduce(
+                  (acc, it) => acc + Number(it.quantity ?? 1) * Number(it.unit_price ?? 0),
+                  0
+                );
+          const groupRow: Record<string, unknown> = {
+            id: crypto.randomUUID(),
+            service_id: service.id,
+            category_name: grp.category_name,
+            pricing_mode: mode,
+            category_subtotal: grpSubtotal,
+            display_order: gIdx,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          };
+          db.service_category_groups.push(groupRow);
+
+          const persistedItems: Array<Record<string, unknown>> = [];
+          items.forEach((it, iIdx) => {
+            const qty = Number(it.quantity ?? 1);
+            const uPrice = mode === 'itemized' ? Number(it.unit_price ?? 0) : 0;
+            const itemRow: Record<string, unknown> = {
+              id: crypto.randomUUID(),
+              service_id: service.id,
+              category_group_id: groupRow.id,
+              category_name: grp.category_name,
+              item_name: it.item_name ?? null,
+              capacity_litres: it.capacity_litres ?? null,
+              quantity: qty,
+              unit_price: uPrice,
+              line_total: mode === 'itemized' ? qty * uPrice : 0,
+              description: it.description ?? null,
+              display_order: iIdx,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            };
+            db.service_items.push(itemRow);
+            persistedItems.push(itemRow);
+          });
+          persistedGroups.push({ ...groupRow, items: persistedItems });
+        });
+
+        if (p.p_payment_amount && Number(p.p_payment_amount) > 0) {
+          db.payments.push({
+            id: crypto.randomUUID(),
+            service_id: service.id,
+            customer_id: customer.id,
+            amount: Number(p.p_payment_amount),
+            payment_type: 'payment',
+            payment_method: p.p_payment_method ?? 'Cash',
+            reference_number: p.p_payment_ref ?? null,
+            payment_date: p.p_payment_date ?? p.p_service_date,
+            created_at: new Date().toISOString(),
+            archived_at: null,
+          });
+          recalcServiceFinancials(db, String(service.id));
+        }
+
+        let reminder: Record<string, unknown> | null = null;
+        if (p.p_reminder_enabled && p.p_reminder_date) {
+          reminder = {
+            id: crypto.randomUUID(),
+            service_id: service.id,
+            customer_id: customer.id,
+            due_date: p.p_reminder_date,
+            reminder_type: p.p_reminder_type ?? 'service_due',
+            status: 'active',
+            notes: p.p_reminder_notes ?? null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            archived_at: null,
+          };
+          db.reminders.push(reminder);
+        }
+
+        return {
+          data: { customer, service, groups: persistedGroups, reminder, deduplicated: false },
+          error: null,
+        };
+      }
+
+      if (name === 'update_cart_service') {
+        const p = params ?? {};
+        const srv = db.services.find((s) => s.id === p.p_service_id);
+        if (!srv) return { data: null, error: { message: 'Service record not found' } };
+
+        const cartGroups = (p.p_cart_groups ?? []) as Array<Record<string, unknown>>;
+        const snapshot = cartGroups.map((g) => String(g.category_name));
+        const primaryServiceType =
+          snapshot.length <= 1
+            ? (snapshot[0] ?? 'Service')
+            : `${snapshot[0]} (+${snapshot.length - 1} more)`;
+
+        let subtotal = 0;
+        const summaryParts: string[] = [];
+        for (const grp of cartGroups) {
+          const mode = grp.pricing_mode === 'category_total' ? 'category_total' : 'itemized';
+          const items = (grp.items ?? []) as Array<Record<string, unknown>>;
+          if (mode === 'category_total') {
+            subtotal += Number(grp.category_subtotal ?? 0);
+          } else {
+            for (const it of items) {
+              subtotal += Number(it.quantity ?? 1) * Number(it.unit_price ?? 0);
+            }
+          }
+          for (const it of items) {
+            const label = String(it.item_name ?? grp.category_name);
+            const cap = it.capacity_litres ? ` ${it.capacity_litres}L` : '';
+            summaryParts.push(`${label}${cap} ×${it.quantity ?? 1}`);
+          }
+        }
+        subtotal = Math.round((subtotal + Number.EPSILON) * 100) / 100;
+        const discountType = p.p_discount_type === 'percentage' ? 'percentage' : 'fixed';
+        const discountVal = Number(p.p_discount_value ?? 0);
+        const discountAmt =
+          discountType === 'percentage'
+            ? Math.round((subtotal * (discountVal / 100) + Number.EPSILON) * 100) / 100
+            : Math.round((discountVal + Number.EPSILON) * 100) / 100;
+
+        srv.service_date = p.p_service_date ?? srv.service_date;
+        srv.service_type = primaryServiceType;
+        srv.tank_details = summaryParts.join(', ').slice(0, 150) || null;
+        srv.description = p.p_description ?? null;
+        srv.notes = p.p_notes ?? null;
+        srv.next_due_date = p.p_next_due_date ?? null;
+        srv.subtotal_amount = subtotal;
+        srv.price = subtotal;
+        srv.discount_type = discountType;
+        srv.discount_value = discountVal;
+        srv.discount = discountAmt;
+        srv.service_categories_snapshot = snapshot;
+        srv.updated_at = new Date().toISOString();
+        recalcServiceFinancials(db, String(srv.id));
+
+        // Replace groups and items for this service without touching payments!
+        db.service_items = db.service_items.filter((i) => i.service_id !== srv.id);
+        db.service_category_groups = db.service_category_groups.filter(
+          (g) => g.service_id !== srv.id
+        );
+
+        const persistedGroups: Array<Record<string, unknown>> = [];
+        cartGroups.forEach((grp, gIdx) => {
+          const mode = grp.pricing_mode === 'category_total' ? 'category_total' : 'itemized';
+          const items = (grp.items ?? []) as Array<Record<string, unknown>>;
+          const grpSubtotal =
+            mode === 'category_total'
+              ? Number(grp.category_subtotal ?? 0)
+              : items.reduce(
+                  (acc, it) => acc + Number(it.quantity ?? 1) * Number(it.unit_price ?? 0),
+                  0
+                );
+          const groupRow: Record<string, unknown> = {
+            id: crypto.randomUUID(),
+            service_id: srv.id,
+            category_name: grp.category_name,
+            pricing_mode: mode,
+            category_subtotal: grpSubtotal,
+            display_order: gIdx,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          };
+          db.service_category_groups.push(groupRow);
+
+          const persistedItems: Array<Record<string, unknown>> = [];
+          items.forEach((it, iIdx) => {
+            const qty = Number(it.quantity ?? 1);
+            const uPrice = mode === 'itemized' ? Number(it.unit_price ?? 0) : 0;
+            const itemRow: Record<string, unknown> = {
+              id: crypto.randomUUID(),
+              service_id: srv.id,
+              category_group_id: groupRow.id,
+              category_name: grp.category_name,
+              item_name: it.item_name ?? null,
+              capacity_litres: it.capacity_litres ?? null,
+              quantity: qty,
+              unit_price: uPrice,
+              line_total: mode === 'itemized' ? qty * uPrice : 0,
+              description: it.description ?? null,
+              display_order: iIdx,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            };
+            db.service_items.push(itemRow);
+            persistedItems.push(itemRow);
+          });
+          persistedGroups.push({ ...groupRow, items: persistedItems });
+        });
+
+        return {
+          data: { service: srv, groups: persistedGroups },
+          error: null,
+        };
+      }
+
       if (name === 'permanently_delete_service') {
         const srvId = String(params?.p_service_id ?? '');
         const files = db.service_files.filter((f) => f.service_id === srvId);
@@ -555,17 +883,28 @@ export function createTestHarness() {
         db.service_files = db.service_files.filter((f) => f.service_id !== srvId);
         db.reminders = db.reminders.filter((r) => r.service_id !== srvId);
         db.payments = db.payments.filter((p) => p.service_id !== srvId);
+        db.service_items = db.service_items.filter((i) => i.service_id !== srvId);
+        db.service_category_groups = db.service_category_groups.filter(
+          (g) => g.service_id !== srvId
+        );
         db.services = db.services.filter((s) => s.id !== srvId);
         return { data: { deleted_service_id: srvId, storage_paths: paths }, error: null };
       }
 
       if (name === 'permanently_delete_customer') {
         const custId = String(params?.p_customer_id ?? '');
+        const custServiceIds = new Set(
+          db.services.filter((s) => s.customer_id === custId).map((s) => String(s.id))
+        );
         const files = db.service_files.filter((f) => f.customer_id === custId);
         const paths = files.map((f) => String(f.storage_path));
         db.service_files = db.service_files.filter((f) => f.customer_id !== custId);
         db.reminders = db.reminders.filter((r) => r.customer_id !== custId);
         db.payments = db.payments.filter((p) => p.customer_id !== custId);
+        db.service_items = db.service_items.filter((i) => !custServiceIds.has(String(i.service_id)));
+        db.service_category_groups = db.service_category_groups.filter(
+          (g) => !custServiceIds.has(String(g.service_id))
+        );
         db.services = db.services.filter((s) => s.customer_id !== custId);
         db.customers = db.customers.filter((c) => c.id !== custId);
         return { data: { deleted_customer_id: custId, storage_paths: paths }, error: null };

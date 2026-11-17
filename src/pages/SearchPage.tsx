@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronLeft, ChevronRight, RotateCcw, Search } from 'lucide-react';
-import { PaymentStatusBadge } from '../components/ui/Badge';
+import { Badge, PaymentStatusBadge } from '../components/ui/Badge';
 import { EmptyState, ErrorBanner, SkeletonCard } from '../components/ui/Feedback';
 import { useAuth } from '../context/AuthContext';
 import { apiFetch, ApiError } from '../lib/api';
@@ -388,7 +388,23 @@ export function SearchPage() {
                       )}
                     </td>
                     <td className="px-4 py-3 text-xs text-text-secondary">
-                      <p className="font-medium text-text-primary">{srv.service_type}</p>
+                      {srv.service_categories_snapshot &&
+                      srv.service_categories_snapshot.length > 0 ? (
+                        <div className="flex flex-wrap gap-1 mb-0.5">
+                          {srv.service_categories_snapshot.map((cat) => (
+                            <Badge key={cat} variant="neutral">
+                              {cat}
+                            </Badge>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="font-medium text-text-primary">{srv.service_type}</p>
+                      )}
+                      {srv.tank_details && (
+                        <p className="truncate max-w-xs text-[11px] text-text-muted">
+                          {srv.tank_details}
+                        </p>
+                      )}
                       {srv.notes && <p className="truncate max-w-xs">{srv.notes}</p>}
                     </td>
                     <td className="px-4 py-3 text-xs">

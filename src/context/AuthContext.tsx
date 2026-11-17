@@ -26,6 +26,13 @@ const DEFAULT_SETTINGS: BusinessSettings = {
     'Commercial Tank Cleaning',
     'Pipeline & Disinfection',
   ],
+  service_categories: [
+    { name: 'Overhead Tank Cleaning', active: true, kind: 'tank' },
+    { name: 'Underground Sump Cleaning', active: true, kind: 'sump' },
+    { name: 'Loft Tank Cleaning', active: true, kind: 'tank' },
+    { name: 'Commercial Tank Cleaning', active: true, kind: 'tank' },
+    { name: 'Pipeline & Disinfection', active: true, kind: 'plumbing' },
+  ],
   default_reminder_months: 6,
 };
 

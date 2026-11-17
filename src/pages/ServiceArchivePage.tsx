@@ -7,7 +7,7 @@ import {
   List,
   Search,
 } from 'lucide-react';
-import { PaymentStatusBadge } from '../components/ui/Badge';
+import { Badge, PaymentStatusBadge } from '../components/ui/Badge';
 import { EmptyState, ErrorBanner, SkeletonCard } from '../components/ui/Feedback';
 import { useAuth } from '../context/AuthContext';
 import { apiFetch, ApiError } from '../lib/api';
@@ -23,6 +23,7 @@ interface ArchiveServiceRow {
   customer_id: string;
   service_date: string;
   service_type: string;
+  service_categories_snapshot?: string[];
   tank_details: string | null;
   total_amount: number;
   amount_paid: number;
@@ -485,12 +486,22 @@ export function ServiceArchivePage() {
                           </div>
                           <PaymentStatusBadge status={srv.payment_status} />
                         </div>
-                        <p className="text-xs text-text-secondary">
-                          {srv.service_type} •{' '}
+                        <div className="flex flex-wrap items-center gap-1.5 text-xs text-text-secondary">
+                          {srv.service_categories_snapshot &&
+                          srv.service_categories_snapshot.length > 0 ? (
+                            srv.service_categories_snapshot.map((cat) => (
+                              <Badge key={cat} variant="neutral">
+                                {cat}
+                              </Badge>
+                            ))
+                          ) : (
+                            <span>{srv.service_type}</span>
+                          )}
+                          <span>•</span>
                           <strong className="text-text-primary">
                             {formatCurrency(srv.total_amount, sym)}
                           </strong>
-                        </p>
+                        </div>
                         <p className="text-[10px] text-text-muted">
                           Uploaded (IST): {formatDateTimeIst(srv.created_at)}
                         </p>
@@ -540,11 +551,22 @@ export function ServiceArchivePage() {
                             {srv.customers.phone_number}
                           </span>
                         </div>
-                        <p className="text-xs text-text-secondary">
-                          {srv.service_type}
-                          {srv.customers.area ? ` • ${srv.customers.area}` : ''} • Recorded{' '}
-                          {formatDateTimeIst(srv.created_at)}
-                        </p>
+                        <div className="flex flex-wrap items-center gap-1.5 text-xs text-text-secondary">
+                          {srv.service_categories_snapshot &&
+                          srv.service_categories_snapshot.length > 0 ? (
+                            srv.service_categories_snapshot.map((cat) => (
+                              <Badge key={cat} variant="neutral">
+                                {cat}
+                              </Badge>
+                            ))
+                          ) : (
+                            <span>{srv.service_type}</span>
+                          )}
+                          <span>
+                            {srv.customers.area ? ` • ${srv.customers.area}` : ''} • Recorded{' '}
+                            {formatDateTimeIst(srv.created_at)}
+                          </span>
+                        </div>
                       </div>
                       <div className="flex items-center gap-3 shrink-0">
                         <span className="text-sm font-semibold">

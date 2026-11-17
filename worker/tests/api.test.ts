@@ -371,4 +371,326 @@ describe('ZERO BASE Worker API Integration & Security Suite', () => {
     expect(computeReminderCategory({ status: 'cancelled', due_date: '2026-11-16' }, '2026-11-16')).toBe('Cancelled');
     expect(computeReminderCategory({ status: 'completed', due_date: '2026-11-15' }, '2026-11-16')).toBe('Completed');
   });
+
+  it('supports itemized multi-category cart, itemized vs combined pricing, fixed & percentage discounts, edit reconciliation, and category deactivation history preservation', async () => {
+    const { db, env, overrides } = createTestHarness();
+    const app = createApp(overrides);
+
+    // 1. Admin configures service categories (adds Pressure Washing and rejects zero active categories)
+    const zeroActiveRes = await app.request(
+      '/api/settings',
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: 'Bearer owner-1-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          service_categories: [{ name: 'Disabled Cat', active: false, kind: 'other' }],
+        }),
+      },
+      env,
+    );
+    expect(zeroActiveRes.status).toBe(400);
+
+    const addCatRes = await app.request(
+      '/api/settings',
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: 'Bearer owner-1-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          service_categories: [
+            { name: 'Overhead Tank Cleaning', active: true, kind: 'tank' },
+            { name: 'Underground Sump Cleaning', active: true, kind: 'sump' },
+            { name: 'Solar Panel Cleaning', active: true, kind: 'solar' },
+            { name: 'Plumbing Services', active: true, kind: 'plumbing' },
+            { name: 'Pressure Washing', active: true, kind: 'other' },
+          ],
+        }),
+      },
+      env,
+    );
+    expect(addCatRes.status).toBe(200);
+
+    // 2. Rejects discount > subtotal cleanly
+    const badDiscountRes = await app.request(
+      '/api/services/unified',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-1-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          new_customer: {
+            full_name: 'Cart Validation Customer',
+            phone_number: '9988776655',
+            address: '1 Test Street',
+          },
+          service_date: '2026-11-17',
+          cart_groups: [
+            {
+              category_name: 'Overhead Tank Cleaning',
+              pricing_mode: 'itemized',
+              category_subtotal: 1000,
+              items: [{ item_name: 'Tank 1', capacity_litres: 1000, quantity: 1, unit_price: 1000 }],
+            },
+          ],
+          discount_type: 'fixed',
+          discount_value: 1500,
+        }),
+      },
+      env,
+    );
+    expect(badDiscountRes.status).toBe(400);
+
+    // 3. Multi-category visit: Tank Cleaning (itemized: 2x1000L @600 + 1x5000L @1500 = 2700),
+    //    Sump Cleaning (combined category total = 1800, item unit_price ignored so no double counting),
+    //    Solar Panel Cleaning (20 panels @ 50 = 1000),
+    //    Pressure Washing (itemized 500) -> Subtotal = 6000, 10% discount = 600, Grand Total = 5400, Partial Paid 2000
+    const cartCreateRes = await app.request(
+      '/api/services/unified',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-1-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          new_customer: {
+            full_name: 'Multi Service Villa',
+            phone_number: '+91 9000011111',
+            address: '42 Palm Meadows',
+            area: 'Whitefield',
+          },
+          service_date: '2026-11-10',
+          cart_groups: [
+            {
+              category_name: 'Overhead Tank Cleaning',
+              pricing_mode: 'itemized',
+              category_subtotal: 0, // backend recomputes authoritatively
+              items: [
+                {
+                  item_name: 'Block A Tanks',
+                  capacity_litres: 1000,
+                  quantity: 2,
+                  unit_price: 600,
+                },
+                {
+                  item_name: 'Main Tank',
+                  capacity_litres: 5000,
+                  quantity: 1,
+                  unit_price: 1500,
+                  description: 'Heavy scale',
+                },
+              ],
+            },
+            {
+              category_name: 'Underground Sump Cleaning',
+              pricing_mode: 'category_total',
+              category_subtotal: 1800,
+              items: [
+                { item_name: 'Sump 1', capacity_litres: 10000, quantity: 1, unit_price: 999 },
+                { item_name: 'Sump 2', capacity_litres: 5000, quantity: 1, unit_price: 999 },
+              ],
+            },
+            {
+              category_name: 'Solar Panel Cleaning',
+              pricing_mode: 'itemized',
+              category_subtotal: 0,
+              items: [{ item_name: 'Rooftop Panels', quantity: 20, unit_price: 50 }],
+            },
+            {
+              category_name: 'Pressure Washing',
+              pricing_mode: 'itemized',
+              category_subtotal: 0,
+              items: [{ item_name: 'Terrace Floor', quantity: 1, unit_price: 500 }],
+            },
+          ],
+          discount_type: 'percentage',
+          discount_value: 10,
+          initial_payment: {
+            amount: 2000,
+            payment_method: 'UPI',
+            reference_number: 'UPI-CART-1',
+          },
+          reminder: { enabled: false },
+        }),
+      },
+      env,
+    );
+    expect(cartCreateRes.status).toBe(201);
+    const created = (await cartCreateRes.json()) as {
+      service: {
+        id: string;
+        subtotal_amount: number;
+        discount_type: string;
+        discount_value: number;
+        discount: number;
+        total_amount: number;
+        amount_paid: number;
+        balance_amount: number;
+        payment_status: string;
+        service_categories_snapshot: string[];
+      };
+    };
+    expect(created.service.subtotal_amount).toBe(6000);
+    expect(created.service.discount_type).toBe('percentage');
+    expect(created.service.discount_value).toBe(10);
+    expect(created.service.discount).toBe(600);
+    expect(created.service.total_amount).toBe(5400);
+    expect(created.service.amount_paid).toBe(2000);
+    expect(created.service.balance_amount).toBe(3400);
+    expect(created.service.payment_status).toBe('Partially Paid');
+    expect(created.service.service_categories_snapshot).toEqual([
+      'Overhead Tank Cleaning',
+      'Underground Sump Cleaning',
+      'Solar Panel Cleaning',
+      'Pressure Washing',
+    ]);
+
+    // 4. GET /api/services/:id loads full itemized category groups + items
+    const detailRes = await app.request(`/api/services/${created.service.id}`, {
+      headers: { Authorization: 'Bearer owner-2-token' },
+    }, env);
+    expect(detailRes.status).toBe(200);
+    const detail = (await detailRes.json()) as {
+      category_groups: Array<{
+        category_name: string;
+        pricing_mode: string;
+        category_subtotal: number;
+        items: Array<{ item_name: string; unit_price: number; line_total: number }>;
+      }>;
+    };
+    expect(detail.category_groups.length).toBe(4);
+    expect(detail.category_groups[0].category_subtotal).toBe(2700);
+    expect(detail.category_groups[1].pricing_mode).toBe('category_total');
+    expect(detail.category_groups[1].category_subtotal).toBe(1800);
+    // Item unit_price inside combined mode zeroed so no double counting
+    expect(detail.category_groups[1].items[0].line_total).toBe(0);
+
+    // 5. Search & Archive filter find multi-category visit by ANY category in snapshot
+    const searchSolar = await app.request(
+      `/api/search?service_type=${encodeURIComponent('Solar Panel Cleaning')}`,
+      { headers: { Authorization: 'Bearer owner-1-token' } },
+      env,
+    );
+    expect(((await searchSolar.json()) as { total: number }).total).toBe(1);
+
+    const archiveSolar = await app.request(
+      `/api/archive/summary?year=2026&month=11&service_type=${encodeURIComponent('Solar Panel Cleaning')}`,
+      { headers: { Authorization: 'Bearer owner-1-token' } },
+      env,
+    );
+    expect(((await archiveSolar.json()) as { month_services: unknown[] }).month_services.length).toBe(1);
+
+    // 6. Deactivate "Pressure Washing" in Settings -> historical bill remains intact AND can still be edited,
+    //    while NEW services cannot select the deactivated category
+    const deactivateRes = await app.request(
+      '/api/settings',
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: 'Bearer owner-1-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          service_categories: [
+            { name: 'Overhead Tank Cleaning', active: true, kind: 'tank' },
+            { name: 'Underground Sump Cleaning', active: true, kind: 'sump' },
+            { name: 'Solar Panel Cleaning', active: true, kind: 'solar' },
+            { name: 'Plumbing Services', active: true, kind: 'plumbing' },
+            { name: 'Pressure Washing', active: false, kind: 'other' },
+          ],
+        }),
+      },
+      env,
+    );
+    expect(deactivateRes.status).toBe(200);
+
+    // New visit using deactivated category is rejected
+    const newInactiveRes = await app.request(
+      '/api/services/unified',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-1-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          customer_id: db.customers[0].id,
+          service_date: '2026-11-17',
+          cart_groups: [
+            {
+              category_name: 'Pressure Washing',
+              pricing_mode: 'itemized',
+              category_subtotal: 400,
+              items: [{ item_name: 'Patio', quantity: 1, unit_price: 400 }],
+            },
+          ],
+          discount_type: 'fixed',
+          discount_value: 0,
+        }),
+      },
+      env,
+    );
+    expect(newInactiveRes.status).toBe(400);
+
+    // 7. Edit existing historical cart: keeps historical "Pressure Washing", adjusts discount to fixed ₹500,
+    //    and preserves existing payment (₹2000) without duplicating payment records
+    const paymentCountBeforeEdit = db.payments.length;
+    const editRes = await app.request(
+      `/api/services/${created.service.id}`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: 'Bearer owner-3-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          service_date: '2026-11-10',
+          cart_groups: [
+            {
+              category_name: 'Overhead Tank Cleaning',
+              pricing_mode: 'itemized',
+              category_subtotal: 0,
+              items: [{ item_name: 'Tank 1', capacity_litres: 2000, quantity: 1, unit_price: 1500 }],
+            },
+            {
+              category_name: 'Pressure Washing',
+              pricing_mode: 'itemized',
+              category_subtotal: 0,
+              items: [{ item_name: 'Terrace Floor', quantity: 1, unit_price: 1000 }],
+            },
+          ],
+          discount_type: 'fixed',
+          discount_value: 500,
+        }),
+      },
+      env,
+    );
+    expect(editRes.status).toBe(200);
+    const edited = (await editRes.json()) as {
+      service: {
+        subtotal_amount: number;
+        discount: number;
+        total_amount: number;
+        amount_paid: number;
+        balance_amount: number;
+        payment_status: string;
+        service_date: string;
+      };
+    };
+    expect(db.payments.length).toBe(paymentCountBeforeEdit); // No duplicate payments created!
+    expect(edited.service.service_date).toBe('2026-11-10');
+    expect(edited.service.subtotal_amount).toBe(2500);
+    expect(edited.service.discount).toBe(500);
+    expect(edited.service.total_amount).toBe(2000);
+    expect(edited.service.amount_paid).toBe(2000);
+    expect(edited.service.balance_amount).toBe(0);
+    expect(edited.service.payment_status).toBe('Paid');
+  });
 });

@@ -37,12 +37,23 @@ export interface UserProfile {
   accent_color: string;
 }
 
+export type CategoryKind = 'tank' | 'sump' | 'solar' | 'plumbing' | 'other';
+export type PricingMode = 'itemized' | 'category_total';
+export type DiscountType = 'fixed' | 'percentage';
+
+export interface ServiceCategoryConfig {
+  name: string;
+  active: boolean;
+  kind?: CategoryKind;
+}
+
 export interface BusinessSettings {
   app_name: string;
   timezone: string;
   currency_code: string;
   currency_symbol: string;
   service_types: string[];
+  service_categories?: ServiceCategoryConfig[];
   default_reminder_months: number;
 }
 
@@ -60,6 +71,30 @@ export interface Customer {
   archived_at: string | null;
 }
 
+export interface ServiceItem {
+  id: string;
+  service_id: string;
+  category_group_id: string;
+  category_name: string;
+  item_name: string | null;
+  capacity_litres: number | null;
+  quantity: number;
+  unit_price: number;
+  line_total: number;
+  description: string | null;
+  display_order: number;
+}
+
+export interface ServiceCategoryGroup {
+  id: string;
+  service_id: string;
+  category_name: string;
+  pricing_mode: PricingMode;
+  category_subtotal: number;
+  display_order: number;
+  items: ServiceItem[];
+}
+
 export interface ServiceRecord {
   id: string;
   customer_id: string;
@@ -68,11 +103,15 @@ export interface ServiceRecord {
   tank_details: string | null;
   description: string | null;
   price: number;
+  subtotal_amount?: number;
+  discount_type?: DiscountType;
+  discount_value?: number;
   discount: number;
   total_amount: number;
   amount_paid: number;
   balance_amount: number;
   payment_status: PaymentStatus;
+  service_categories_snapshot?: string[];
   next_due_date: string | null;
   notes: string | null;
   created_at: string;

@@ -62,9 +62,6 @@ searchRoutes.get('/search', async (c) => {
   if (paymentStatus) {
     query = query.eq('payment_status', paymentStatus);
   }
-  if (serviceType) {
-    query = query.eq('service_type', serviceType);
-  }
   if (year && /^\d{4}$/.test(year)) {
     const y = Number(year);
     if (month && /^(0?[1-9]|1[0-2])$/.test(month)) {
@@ -94,6 +91,7 @@ searchRoutes.get('/search', async (c) => {
     customer_id: string;
     service_date: string;
     service_type: string;
+    service_categories_snapshot?: string[];
     tank_details?: string | null;
     description?: string | null;
     notes?: string | null;
@@ -123,6 +121,14 @@ searchRoutes.get('/search', async (c) => {
 
   if (area) {
     rows = rows.filter((r) => (r.customers.area ?? '').toLowerCase().includes(area));
+  }
+  if (serviceType) {
+    rows = rows.filter(
+      (r) =>
+        r.service_type === serviceType ||
+        (Array.isArray(r.service_categories_snapshot) &&
+          r.service_categories_snapshot.includes(serviceType))
+    );
   }
   if (paymentMethod) {
     rows = rows.filter((r) =>

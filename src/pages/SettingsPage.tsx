@@ -24,7 +24,13 @@ import {
   normalizeHexColor,
   type ThemeMode,
 } from '../lib/theme';
-import type { AuditLogEntry, BusinessSettings } from '../types/domain';
+import { resolveServiceCategories } from '../lib/cartPricing';
+import type {
+  AuditLogEntry,
+  BusinessSettings,
+  CategoryKind,
+  ServiceCategoryConfig,
+} from '../types/domain';
 
 interface OrphanReport {
   total_db_files: number;
@@ -42,8 +48,11 @@ export function SettingsPage() {
   const [themeSavedMsg, setThemeSavedMsg] = useState<string | null>(null);
 
   const [appName, setAppName] = useState(settings.app_name);
-  const [serviceTypes, setServiceTypes] = useState<string[]>(settings.service_types);
+  const [serviceCategories, setServiceCategories] = useState<ServiceCategoryConfig[]>(() =>
+    resolveServiceCategories(settings),
+  );
   const [newServiceType, setNewServiceType] = useState('');
+  const [newCategoryKind, setNewCategoryKind] = useState<CategoryKind>('tank');
   const [defaultMonths, setDefaultMonths] = useState(settings.default_reminder_months);
   const [savingSettings, setSavingSettings] = useState(false);
   const [settingsMsg, setSettingsMsg] = useState<string | null>(null);
@@ -64,7 +73,7 @@ export function SettingsPage() {
 
   useEffect(() => {
     setAppName(settings.app_name);
-    setServiceTypes(settings.service_types);
+    setServiceCategories(resolveServiceCategories(settings));
     setDefaultMonths(settings.default_reminder_months);
   }, [settings]);
 
@@ -126,6 +135,11 @@ export function SettingsPage() {
 
   const handleSaveBusinessSettings = async (e: React.FormEvent) => {
     e.preventDefault();
+    const activeCount = serviceCategories.filter((c) => c.active).length;
+    if (activeCount === 0) {
+      setError('Keep at least one active service category.');
+      return;
+    }
     setSavingSettings(true);
     setSettingsMsg(null);
     setError(null);
@@ -134,7 +148,7 @@ export function SettingsPage() {
         method: 'PATCH',
         body: JSON.stringify({
           app_name: appName.trim(),
-          service_types: serviceTypes,
+          service_categories: serviceCategories,
           default_reminder_months: Number(defaultMonths),
         }),
       });
@@ -357,51 +371,118 @@ export function SettingsPage() {
 
             <div>
               <label className="mb-1.5 block text-xs font-medium text-text-secondary">
-                Configurable Service Types
+                Configurable Service Categories
               </label>
-              <div className="flex flex-wrap gap-2 mb-2.5">
-                {serviceTypes.map((st) => (
-                  <span
-                    key={st}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-bg px-2.5 py-1 text-xs"
-                  >
-                    <span>{st}</span>
-                    {serviceTypes.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setServiceTypes((prev) => prev.filter((item) => item !== st))
-                        }
-                        className="text-text-muted hover:text-error"
-                        aria-label={`Remove ${st}`}
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </button>
-                    )}
-                  </span>
-                ))}
+              <p className="mb-2 text-[11px] text-text-muted">
+                Active categories appear in the Service Cart menu. Deactivating or removing a category preserves all past bills.
+              </p>
+              <div className="space-y-2 mb-3">
+                {serviceCategories.map((cat) => {
+                  const activeCount = serviceCategories.filter((c) => c.active).length;
+                  const disableDeactivate = cat.active && activeCount <= 1;
+                  return (
+                    <div
+                      key={cat.name}
+                      className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs ${
+                        cat.active ? 'border-border bg-bg' : 'border-border/60 bg-bg/40 opacity-75'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className="font-medium text-text-primary truncate">{cat.name}</span>
+                        <Badge variant={cat.active ? 'success' : 'neutral'}>
+                          {cat.active ? 'Active' : 'Inactive'}
+                        </Badge>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={cat.kind || 'other'}
+                          onChange={(e) => {
+                            const nextKind = e.target.value as CategoryKind;
+                            setServiceCategories((prev) =>
+                              prev.map((c) => (c.name === cat.name ? { ...c, kind: nextKind } : c)),
+                            );
+                          }}
+                          className="rounded border border-border bg-surface px-2 py-1 text-[11px]"
+                          aria-label={`Field layout for ${cat.name}`}
+                        >
+                          <option value="tank">Tank (Litres + Qty)</option>
+                          <option value="sump">Sump (Litres + Qty)</option>
+                          <option value="solar">Solar Panels (Qty)</option>
+                          <option value="plumbing">Plumbing (Qty)</option>
+                          <option value="other">General / Other</option>
+                        </select>
+                        <button
+                          type="button"
+                          disabled={disableDeactivate}
+                          onClick={() =>
+                            setServiceCategories((prev) =>
+                              prev.map((c) =>
+                                c.name === cat.name ? { ...c, active: !c.active } : c,
+                              ),
+                            )
+                          }
+                          className="rounded border border-border bg-surface px-2 py-1 text-[11px] font-medium hover:bg-bg disabled:opacity-40"
+                        >
+                          {cat.active ? 'Disable' : 'Enable'}
+                        </button>
+                        {!disableDeactivate && serviceCategories.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setServiceCategories((prev) =>
+                                prev.filter((item) => item.name !== cat.name),
+                              )
+                            }
+                            className="p-1 text-text-muted hover:text-error"
+                            aria-label={`Remove ${cat.name}`}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-              <div className="flex gap-2 max-w-md">
+              <div className="flex flex-wrap gap-2 max-w-xl">
                 <input
                   type="text"
                   value={newServiceType}
                   onChange={(e) => setNewServiceType(e.target.value)}
-                  placeholder="Add new service type..."
-                  className="flex-1 rounded-lg border px-3 py-1.5 text-sm"
+                  placeholder="Add new category (e.g. Solar Panel Cleaning)..."
+                  className="flex-1 min-w-[200px] rounded-lg border px-3 py-1.5 text-sm"
                 />
+                <select
+                  value={newCategoryKind}
+                  onChange={(e) => setNewCategoryKind(e.target.value as CategoryKind)}
+                  className="rounded-lg border px-2.5 py-1.5 text-xs"
+                  aria-label="New category field type"
+                >
+                  <option value="tank">Tank Layout</option>
+                  <option value="sump">Sump Layout</option>
+                  <option value="solar">Solar Layout</option>
+                  <option value="plumbing">Plumbing Layout</option>
+                  <option value="other">General Layout</option>
+                </select>
                 <button
                   type="button"
                   onClick={() => {
                     const trimmed = newServiceType.trim();
-                    if (trimmed && !serviceTypes.includes(trimmed)) {
-                      setServiceTypes((prev) => [...prev, trimmed]);
+                    const exists = serviceCategories.some(
+                      (c) => c.name.toLowerCase() === trimmed.toLowerCase(),
+                    );
+                    if (trimmed && !exists) {
+                      setServiceCategories((prev) => [
+                        ...prev,
+                        { name: trimmed, active: true, kind: newCategoryKind },
+                      ]);
                       setNewServiceType('');
                     }
                   }}
                   className="inline-flex items-center gap-1 rounded-lg border border-border px-3 py-1.5 text-xs font-medium hover:bg-bg"
                 >
                   <Plus className="h-3.5 w-3.5" />
-                  Add
+                  Add Category
                 </button>
               </div>
             </div>

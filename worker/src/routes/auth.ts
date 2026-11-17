@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
+import { inferCategoryKind } from '../lib/cartPricing';
 import type { AppBindings } from '../types';
 
 export const authRoutes = new Hono<AppBindings>();
@@ -19,9 +20,29 @@ authRoutes.get('/me', async (c) => {
 
   const { data: settings } = await supabase
     .from('business_settings')
-    .select('app_name, timezone, currency_code, currency_symbol, service_types, default_reminder_months')
+    .select('*')
     .eq('singleton_key', true)
     .single();
+
+  const defaultTypes = [
+    'Overhead Tank Cleaning',
+    'Underground Sump Cleaning',
+    'Sump and Overhead Tank Cleaning',
+    'Solar Cleaning',
+    'Plumbing',
+  ];
+
+  const rawSettings = (settings ?? {}) as Record<string, unknown>;
+  const rawTypes = Array.isArray(rawSettings.service_types)
+    ? (rawSettings.service_types as string[])
+    : defaultTypes;
+  const rawCats = Array.isArray(rawSettings.service_categories)
+    ? rawSettings.service_categories
+    : rawTypes.map((name) => ({
+        name,
+        active: true,
+        kind: inferCategoryKind(name),
+      }));
 
   return c.json({
     user: {
@@ -32,19 +53,14 @@ authRoutes.get('/me', async (c) => {
       theme_mode: user.themeMode,
       accent_color: user.accentColor,
     },
-    settings: settings ?? {
-      app_name: 'ZERO BASE',
-      timezone: 'Asia/Kolkata',
-      currency_code: 'INR',
-      currency_symbol: '₹',
-      service_types: [
-        'Overhead Tank Cleaning',
-        'Underground Sump Cleaning',
-        'Loft Tank Cleaning',
-        'Commercial Tank Cleaning',
-        'Pipeline & Disinfection',
-      ],
-      default_reminder_months: 6,
+    settings: {
+      app_name: (rawSettings.app_name as string) ?? 'ZERO BASE',
+      timezone: (rawSettings.timezone as string) ?? 'Asia/Kolkata',
+      currency_code: (rawSettings.currency_code as string) ?? 'INR',
+      currency_symbol: (rawSettings.currency_symbol as string) ?? '₹',
+      service_types: rawTypes,
+      service_categories: rawCats,
+      default_reminder_months: (rawSettings.default_reminder_months as number) ?? 6,
     },
   });
 });
