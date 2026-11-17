@@ -11,6 +11,8 @@ import { PaymentsPage } from './pages/PaymentsPage';
 import { RemindersPage } from './pages/RemindersPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { ResetPasswordPage } from './pages/ResetPasswordPage';
+import { SearchPage } from './pages/SearchPage';
+import { ServiceArchivePage } from './pages/ServiceArchivePage';
 import { ServiceDetailPage } from './pages/ServiceDetailPage';
 import { ServiceHistoryPage } from './pages/ServiceHistoryPage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -21,8 +23,13 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-bg">
-        <div className="text-center space-y-2">
-          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-accent border-t-transparent" />
+        <div className="text-center space-y-3">
+          <img
+            src="/assets/zero-base-logo.png"
+            alt="ZERO BASE"
+            className="mx-auto h-12 w-12 object-contain"
+          />
+          <div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-accent border-t-transparent" />
           <p className="text-xs font-medium tracking-wider text-text-secondary uppercase">
             Verifying Session...
           </p>
@@ -55,6 +62,8 @@ export function App() {
               }
             >
               <Route index element={<DashboardPage />} />
+              <Route path="archive" element={<ServiceArchivePage />} />
+              <Route path="search" element={<SearchPage />} />
               <Route path="history" element={<ServiceHistoryPage />} />
               <Route path="customers" element={<CustomersPage />} />
               <Route path="customers/:id" element={<CustomerProfilePage />} />

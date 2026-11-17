@@ -72,14 +72,16 @@ export function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-bg px-4 py-12">
       <div className="w-full max-w-md space-y-6">
         <div className="text-center">
-          <div className="mx-auto inline-flex h-11 w-11 items-center justify-center rounded-xl bg-accent text-sm font-bold tracking-tight text-accent-fg">
-            ZB
-          </div>
+          <img
+            src="/assets/zero-base-logo.png"
+            alt="ZERO BASE"
+            className="mx-auto h-14 w-14 object-contain"
+          />
           <h1 className="mt-4 text-lg font-semibold tracking-[0.18em] text-text-primary uppercase">
             ZERO BASE
           </h1>
           <p className="mt-1 text-xs text-text-secondary">
-            Private Business Management Portal — Authorized Administrators Only
+            Private Business Management Portal — Authorized Owner Accounts Only
           </p>
         </div>
 
@@ -205,7 +207,7 @@ export function LoginPage() {
         </div>
 
         <p className="text-center text-[11px] text-text-muted">
-          Public registration is disabled. Accounts are provisioned exclusively by the system administrator.
+          Public registration is disabled. Access is restricted to authorized owner accounts.
         </p>
       </div>
     </div>

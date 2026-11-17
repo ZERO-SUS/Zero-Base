@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
+  AlertTriangle,
   Archive,
   ArchiveRestore,
   ArrowLeft,
+  Bell,
   Download,
   Edit3,
   FileText,
@@ -11,27 +13,38 @@ import {
   MapPin,
   Phone,
   Plus,
+  Trash2,
 } from 'lucide-react';
 import { CustomerFormModal } from '../components/customers/CustomerFormModal';
 import { ServiceFormModal } from '../components/services/ServiceFormModal';
-import { Badge, PaymentStatusBadge } from '../components/ui/Badge';
-import { ConfirmDialog } from '../components/ui/ConfirmDialog';
+import { Badge, PaymentStatusBadge, ReminderCategoryBadge } from '../components/ui/Badge';
 import { EmptyState, ErrorBanner, SkeletonCard } from '../components/ui/Feedback';
+import { Modal } from '../components/ui/Modal';
 import { useAuth } from '../context/AuthContext';
 import { apiFetch, ApiError } from '../lib/api';
-import { formatBytes, formatCurrency, formatServiceDate } from '../lib/format';
+import {
+  formatBytes,
+  formatCurrency,
+  formatDateTimeIst,
+  formatDayMonth,
+  formatServiceDate,
+  getMonthName,
+} from '../lib/format';
 import type {
   Customer,
   PaymentRecord,
+  ReminderCategory,
   ReminderRecord,
   ServiceFileRecord,
   ServiceRecord,
+  YearMonthGroup,
 } from '../types/domain';
 
 interface CustomerProfileResponse {
   customer: Customer;
   summary: {
     total_services: number;
+    first_service_date?: string | null;
     last_service_date: string | null;
     total_billed: number;
     total_paid: number;
@@ -39,13 +52,22 @@ interface CustomerProfileResponse {
     next_scheduled_service: string | null;
   };
   services: ServiceRecord[];
+  services_grouped?: YearMonthGroup[];
   payments: PaymentRecord[];
   reminders: ReminderRecord[];
   files: ServiceFileRecord[];
 }
 
+interface DeletionImpact {
+  services_count: number;
+  payments_count: number;
+  reminders_count: number;
+  files_count: number;
+}
+
 export function CustomerProfilePage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const { settings } = useAuth();
   const sym = settings.currency_symbol || '₹';
 
@@ -55,8 +77,12 @@ export function CustomerProfilePage() {
 
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [serviceModalOpen, setServiceModalOpen] = useState(false);
-  const [confirmArchiveOpen, setConfirmArchiveOpen] = useState(false);
-  const [archiving, setArchiving] = useState(false);
+
+  // Safe deletion modal (Archive vs Permanent Delete with impact check)
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [deleteMode, setDeleteMode] = useState<'archive' | 'permanent'>('archive');
+  const [deletionImpact, setDeletionImpact] = useState<DeletionImpact | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const loadProfile = useCallback(async () => {
     if (!id) return;
@@ -76,20 +102,47 @@ export function CustomerProfilePage() {
     void loadProfile();
   }, [loadProfile]);
 
-  const handleArchiveToggle = async () => {
+  const openDeleteDialog = async (mode: 'archive' | 'permanent') => {
     if (!data) return;
-    setArchiving(true);
+    setDeleteMode(mode);
+    setDeleteModalOpen(true);
+    setDeletionImpact(null);
     try {
-      const endpoint = data.customer.archived_at
-        ? `/api/customers/${data.customer.id}/restore`
-        : `/api/customers/${data.customer.id}/archive`;
-      await apiFetch(endpoint, { method: 'POST' });
-      setConfirmArchiveOpen(false);
-      void loadProfile();
+      const res = await apiFetch<{ impact: DeletionImpact }>(
+        `/api/customers/${data.customer.id}/deletion-impact`
+      );
+      setDeletionImpact(res.impact);
+    } catch {
+      // Non-blocking fallback
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!data) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      if (data.customer.archived_at && deleteMode === 'archive') {
+        await apiFetch(`/api/customers/${data.customer.id}/restore`, { method: 'POST' });
+        setDeleteModalOpen(false);
+        void loadProfile();
+      } else if (deleteMode === 'permanent') {
+        await apiFetch(`/api/customers/${data.customer.id}?mode=permanent`, {
+          method: 'DELETE',
+        });
+        setDeleteModalOpen(false);
+        navigate('/customers', { replace: true });
+      } else {
+        await apiFetch(`/api/customers/${data.customer.id}?mode=archive`, {
+          method: 'DELETE',
+        });
+        setDeleteModalOpen(false);
+        void loadProfile();
+      }
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to update archive status.');
+      setError(err instanceof ApiError ? err.message : 'Failed to complete customer action.');
     } finally {
-      setArchiving(false);
+      setDeleting(false);
     }
   };
 
@@ -123,7 +176,10 @@ export function CustomerProfilePage() {
     );
   }
 
-  const { customer, summary, services, payments, files } = data;
+  const { customer, summary, services, services_grouped, payments, reminders, files } = data;
+  const firstDate =
+    summary.first_service_date ??
+    (services.length > 0 ? services[services.length - 1].service_date : null);
 
   return (
     <div className="space-y-6">
@@ -157,7 +213,7 @@ export function CustomerProfilePage() {
           </button>
           <button
             type="button"
-            onClick={() => setConfirmArchiveOpen(true)}
+            onClick={() => void openDeleteDialog('archive')}
             className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-xs font-medium text-text-secondary hover:bg-bg hover:text-text-primary"
           >
             {customer.archived_at ? (
@@ -172,6 +228,14 @@ export function CustomerProfilePage() {
               </>
             )}
           </button>
+          <button
+            type="button"
+            onClick={() => void openDeleteDialog('permanent')}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-error/30 bg-surface px-3 py-2 text-xs font-medium text-error hover:bg-error-soft"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Delete
+          </button>
           {!customer.archived_at && (
             <button
               type="button"
@@ -179,7 +243,7 @@ export function CustomerProfilePage() {
               className="zb-btn-primary inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-medium"
             >
               <Plus className="h-3.5 w-3.5" />
-              Add New Service
+              Add Service
             </button>
           )}
         </div>
@@ -189,7 +253,7 @@ export function CustomerProfilePage() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div className="zb-card p-5 space-y-3">
           <h2 className="text-xs font-semibold uppercase tracking-wider text-text-muted">
-            Contact & Address
+            Contact &amp; Address
           </h2>
           <div className="space-y-2 text-sm">
             <div className="flex items-center gap-2">
@@ -228,7 +292,15 @@ export function CustomerProfilePage() {
           </div>
           <div className="zb-card p-4">
             <p className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
-              Last Service Date
+              First Recorded Service
+            </p>
+            <p className="mt-1.5 text-base font-semibold text-text-primary">
+              {formatServiceDate(firstDate)}
+            </p>
+          </div>
+          <div className="zb-card p-4">
+            <p className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
+              Most Recent Service
             </p>
             <p className="mt-1.5 text-base font-semibold text-text-primary">
               {formatServiceDate(summary.last_service_date)}
@@ -236,15 +308,7 @@ export function CustomerProfilePage() {
           </div>
           <div className="zb-card p-4">
             <p className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
-              Next Scheduled Service
-            </p>
-            <p className="mt-1.5 text-base font-semibold text-accent">
-              {formatServiceDate(summary.next_scheduled_service)}
-            </p>
-          </div>
-          <div className="zb-card p-4">
-            <p className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
-              Total Billed
+              Total Service Value
             </p>
             <p className="mt-1.5 text-xl font-semibold text-text-primary">
               {formatCurrency(summary.total_billed, sym)}
@@ -252,7 +316,7 @@ export function CustomerProfilePage() {
           </div>
           <div className="zb-card p-4">
             <p className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
-              Total Paid
+              Total Amount Paid
             </p>
             <p className="mt-1.5 text-xl font-semibold text-success">
               {formatCurrency(summary.total_paid, sym)}
@@ -273,74 +337,99 @@ export function CustomerProfilePage() {
         </div>
       </div>
 
-      {/* Complete Service History */}
+      {/* Upcoming Reminders for Customer */}
+      {reminders.length > 0 && (
+        <section className="zb-card p-4 space-y-2.5">
+          <div className="flex items-center gap-2">
+            <Bell className="h-4 w-4 text-accent" />
+            <h2 className="text-sm font-semibold text-text-primary">
+              Upcoming &amp; Active Reminders ({reminders.length})
+            </h2>
+          </div>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {reminders.map((r) => (
+              <div
+                key={r.id}
+                className="flex items-center justify-between rounded-lg border border-border bg-bg px-3.5 py-2.5 text-xs"
+              >
+                <div>
+                  <p className="font-semibold text-text-primary">
+                    Due {formatServiceDate(r.due_date)}
+                  </p>
+                  {r.notes && <p className="text-text-secondary">{r.notes}</p>}
+                </div>
+                <ReminderCategoryBadge category={(r.category ?? 'Upcoming') as ReminderCategory} />
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Year-Wise Grouped Customer Service History (Newest First) */}
       <section className="zb-card overflow-hidden">
         <div className="flex items-center justify-between border-b border-border px-5 py-3.5">
           <h2 className="text-sm font-semibold text-text-primary">
-            Complete Service History ({services.length})
+            Year-Wise Service History ({services.length})
           </h2>
+          <span className="text-[11px] text-text-muted">Grouped by service_date (newest first)</span>
         </div>
 
         {services.length === 0 ? (
           <div className="p-5">
             <EmptyState
               title="No cleaning services recorded for this customer"
-              description="Click 'Add New Service' above to record their first tank cleaning operation."
+              description="Click 'Add Service' above to record their first tank cleaning operation."
             />
           </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-sm">
-              <thead className="border-b border-border bg-bg text-[11px] font-semibold uppercase tracking-wider text-text-muted">
-                <tr>
-                  <th className="px-4 py-3">Service Date</th>
-                  <th className="px-4 py-3">Service Type</th>
-                  <th className="px-4 py-3">Billed</th>
-                  <th className="px-4 py-3">Paid</th>
-                  <th className="px-4 py-3">Balance</th>
-                  <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3 text-right">Details</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {services.map((srv) => (
-                  <tr key={srv.id} className="hover:bg-bg/70">
-                    <td className="px-4 py-3 font-medium text-text-primary">
-                      {formatServiceDate(srv.service_date)}
-                    </td>
-                    <td className="px-4 py-3 text-text-secondary">
-                      {srv.service_type}
-                      {srv.tank_details ? ` (${srv.tank_details})` : ''}
-                    </td>
-                    <td className="px-4 py-3 font-medium">
-                      {formatCurrency(srv.total_amount, sym)}
-                    </td>
-                    <td className="px-4 py-3 text-text-secondary">
-                      {formatCurrency(srv.amount_paid, sym)}
-                    </td>
-                    <td className="px-4 py-3 text-text-secondary">
-                      {formatCurrency(srv.balance_amount, sym)}
-                    </td>
-                    <td className="px-4 py-3">
-                      <PaymentStatusBadge status={srv.payment_status} />
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <Link
-                        to={`/services/${srv.id}`}
-                        className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-text-primary hover:bg-bg"
-                      >
-                        Open Service
-                      </Link>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        ) : services_grouped && services_grouped.length > 0 ? (
+          <div className="divide-y divide-border">
+            {services_grouped.map((yr) => (
+              <div key={yr.year} className="p-5 space-y-4">
+                <h3 className="text-base font-bold text-text-primary">{yr.year}</h3>
+                <div className="space-y-3 pl-3 border-l-2 border-border">
+                  {yr.months.map((m) => (
+                    <div key={`${yr.year}-${m.month}`} className="space-y-2">
+                      <h4 className="text-xs font-semibold uppercase tracking-wider text-text-secondary">
+                        {getMonthName(m.month)}
+                      </h4>
+                      <div className="divide-y divide-border rounded-lg border border-border bg-bg/40">
+                        {m.records.map((srv) => (
+                          <Link
+                            key={srv.id}
+                            to={`/services/${srv.id}`}
+                            className="flex flex-col gap-2 px-4 py-3 transition hover:bg-bg sm:flex-row sm:items-center sm:justify-between"
+                          >
+                            <div>
+                              <p className="text-sm font-medium text-text-primary">
+                                <span className="text-accent font-semibold">
+                                  {formatDayMonth(srv.service_date)}
+                                </span>{' '}
+                                — {srv.service_type}
+                                {srv.tank_details ? ` (${srv.tank_details})` : ''}
+                              </p>
+                              <p className="text-[11px] text-text-muted">
+                                Recorded (IST): {formatDateTimeIst(srv.created_at)}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-3 shrink-0">
+                              <span className="text-sm font-semibold text-text-primary">
+                                {formatCurrency(srv.total_amount, sym)}
+                              </span>
+                              <PaymentStatusBadge status={srv.payment_status} />
+                            </div>
+                          </Link>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
           </div>
-        )}
+        ) : null}
       </section>
 
-      {/* Previous Payments & Uploaded Files for this Customer */}
+      {/* Previous Payments & Uploaded Files */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <section className="zb-card overflow-hidden">
           <div className="border-b border-border px-5 py-3.5">
@@ -426,20 +515,79 @@ export function CustomerProfilePage() {
         onSaved={() => void loadProfile()}
       />
 
-      <ConfirmDialog
-        open={confirmArchiveOpen}
-        onClose={() => setConfirmArchiveOpen(false)}
-        onConfirm={() => void handleArchiveToggle()}
-        title={customer.archived_at ? 'Restore Customer' : 'Archive Customer'}
-        message={
-          customer.archived_at
-            ? `Restore ${customer.full_name} to active customer lists?`
-            : `Archive ${customer.full_name}? Historical services, payments, and files remain intact and can be restored anytime.`
+      {/* Safe Deletion / Archive Confirmation Dialog */}
+      <Modal
+        open={deleteModalOpen}
+        onClose={() => setDeleteModalOpen(false)}
+        title={
+          deleteMode === 'permanent'
+            ? 'Permanently Delete Customer'
+            : customer.archived_at
+              ? 'Restore Customer'
+              : 'Archive Customer'
         }
-        confirmLabel={customer.archived_at ? 'Restore Customer' : 'Archive Customer'}
-        danger={!customer.archived_at}
-        loading={archiving}
-      />
+        maxWidthClass="max-w-md"
+      >
+        <div className="space-y-4">
+          {deleteMode === 'permanent' ? (
+            <div className="rounded-lg border border-error/30 bg-error-soft p-3.5 text-xs text-error space-y-2">
+              <div className="flex items-center gap-2 font-semibold">
+                <AlertTriangle className="h-4 w-4 shrink-0" />
+                <span>Permanent Deletion Cannot Be Undone</span>
+              </div>
+              <p>
+                Deleting <strong>{customer.full_name}</strong> ({customer.customer_code}) will
+                permanently remove this customer and all associated records:
+              </p>
+              {deletionImpact ? (
+                <ul className="list-disc pl-5 space-y-0.5">
+                  <li>{deletionImpact.services_count} service record(s)</li>
+                  <li>{deletionImpact.payments_count} payment transaction(s)</li>
+                  <li>{deletionImpact.reminders_count} reminder(s)</li>
+                  <li>{deletionImpact.files_count} file(s) from private storage</li>
+                </ul>
+              ) : (
+                <p>Calculating affected records...</p>
+              )}
+            </div>
+          ) : (
+            <p className="text-sm text-text-secondary">
+              {customer.archived_at
+                ? `Restore ${customer.full_name} to active customer lists?`
+                : `Archive ${customer.full_name}? All ${deletionImpact?.services_count ?? summary.total_services} service record(s), payments, and files remain safely stored and recoverable.`}
+            </p>
+          )}
+
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setDeleteModalOpen(false)}
+              disabled={deleting}
+              className="rounded-lg border border-border px-4 py-2 text-xs font-medium"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={deleting}
+              onClick={() => void handleConfirmDelete()}
+              className={`rounded-lg px-4 py-2 text-xs font-medium disabled:opacity-50 ${
+                deleteMode === 'permanent' || !customer.archived_at
+                  ? 'bg-error text-white hover:opacity-90'
+                  : 'zb-btn-primary'
+              }`}
+            >
+              {deleting
+                ? 'Processing...'
+                : deleteMode === 'permanent'
+                  ? 'Permanently Delete Everything'
+                  : customer.archived_at
+                    ? 'Restore Customer'
+                    : 'Archive Customer'}
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

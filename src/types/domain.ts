@@ -3,24 +3,18 @@ export type PaymentMethod = 'Cash' | 'UPI' | 'Other';
 export type PaymentType = 'payment' | 'refund';
 
 export type FileCategory =
-  | 'Bill photos'
-  | 'UPI transaction screenshots'
-  | 'Before-cleaning photos'
-  | 'After-cleaning photos'
-  | 'Tank photos'
-  | 'Hose photos'
-  | 'Work-area photos'
-  | 'Other attachments';
+  | 'Bills / Invoices'
+  | 'UPI Transaction Screenshots'
+  | 'Before-Service Area Photos'
+  | 'After-Service Area Photos'
+  | 'Other Attachments';
 
 export const FILE_CATEGORIES: FileCategory[] = [
-  'Bill photos',
-  'UPI transaction screenshots',
-  'Before-cleaning photos',
-  'After-cleaning photos',
-  'Tank photos',
-  'Hose photos',
-  'Work-area photos',
-  'Other attachments',
+  'Bills / Invoices',
+  'UPI Transaction Screenshots',
+  'Before-Service Area Photos',
+  'After-Service Area Photos',
+  'Other Attachments',
 ];
 
 export type ReminderCategory =
@@ -30,6 +24,7 @@ export type ReminderCategory =
   | 'Contacted'
   | 'Confirmed'
   | 'Snoozed'
+  | 'Cancelled'
   | 'Dismissed'
   | 'Completed';
 
@@ -134,8 +129,9 @@ export interface ServiceFileRecord {
   storage_path: string;
   mime_type: string;
   file_size: number;
-  category: FileCategory;
+  category: string;
   uploaded_at: string;
+  uploaded_by?: string | null;
   archived_at: string | null;
 }
 
@@ -145,7 +141,7 @@ export interface ReminderRecord {
   service_id: string | null;
   due_date: string;
   reminder_type: 'service_due' | 'custom' | 'follow_up';
-  status: 'active' | 'contacted' | 'confirmed' | 'snoozed' | 'dismissed' | 'completed';
+  status: 'active' | 'contacted' | 'confirmed' | 'snoozed' | 'dismissed' | 'cancelled' | 'completed';
   snoozed_until: string | null;
   contacted_at: string | null;
   confirmed_at: string | null;
@@ -179,6 +175,8 @@ export interface DashboardMetrics {
   upcoming_reminders: number;
   due_today: number;
   overdue_services: number;
+  total_recorded_revenue?: number;
+  total_collected_payments?: number;
   pending_payments_amount: number;
   pending_payments_count: number;
   revenue_this_month: number;

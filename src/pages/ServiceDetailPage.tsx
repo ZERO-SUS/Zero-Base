@@ -1,23 +1,24 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
+  AlertTriangle,
   Archive,
   ArchiveRestore,
   ArrowLeft,
   CreditCard,
   Edit3,
   RotateCcw,
+  Trash2,
 } from 'lucide-react';
 import { AttachmentsPanel } from '../components/attachments/AttachmentsPanel';
 import { PaymentFormModal } from '../components/payments/PaymentFormModal';
 import { ServiceFormModal } from '../components/services/ServiceFormModal';
 import { Badge, PaymentStatusBadge } from '../components/ui/Badge';
-import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { ErrorBanner, SkeletonCard } from '../components/ui/Feedback';
 import { Modal } from '../components/ui/Modal';
 import { useAuth } from '../context/AuthContext';
 import { apiFetch, ApiError } from '../lib/api';
-import { formatCurrency, formatServiceDate } from '../lib/format';
+import { formatCurrency, formatDateTimeIst, formatServiceDate } from '../lib/format';
 import type {
   PaymentMethod,
   PaymentRecord,
@@ -33,8 +34,15 @@ interface ServiceDetailResponse {
   reminders: ReminderRecord[];
 }
 
+interface ServiceDeletionImpact {
+  payments_count: number;
+  reminders_count: number;
+  files_count: number;
+}
+
 export function ServiceDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const { settings } = useAuth();
   const sym = settings.currency_symbol || '₹';
 
@@ -44,8 +52,11 @@ export function ServiceDetailPage() {
 
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
-  const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
-  const [archiving, setArchiving] = useState(false);
+
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [deleteMode, setDeleteMode] = useState<'archive' | 'permanent'>('archive');
+  const [impact, setImpact] = useState<ServiceDeletionImpact | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const [correctTarget, setCorrectTarget] = useState<PaymentRecord | null>(null);
   const [correctReason, setCorrectReason] = useState('');
@@ -74,20 +85,48 @@ export function ServiceDetailPage() {
     void loadDetail();
   }, [loadDetail]);
 
-  const handleArchiveToggle = async () => {
+  const openDeleteModal = async (mode: 'archive' | 'permanent') => {
     if (!data) return;
-    setArchiving(true);
+    setDeleteMode(mode);
+    setDeleteModalOpen(true);
+    setImpact(null);
     try {
-      const endpoint = data.service.archived_at
-        ? `/api/services/${data.service.id}/restore`
-        : `/api/services/${data.service.id}/archive`;
-      await apiFetch(endpoint, { method: 'POST' });
-      setArchiveConfirmOpen(false);
-      void loadDetail();
+      const res = await apiFetch<{ impact: ServiceDeletionImpact }>(
+        `/api/services/${data.service.id}/deletion-impact`
+      );
+      setImpact(res.impact);
+    } catch {
+      // Non-blocking fallback
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!data) return;
+    setDeleting(true);
+    setError(null);
+    try {
+      if (data.service.archived_at && deleteMode === 'archive') {
+        await apiFetch(`/api/services/${data.service.id}/restore`, { method: 'POST' });
+        setDeleteModalOpen(false);
+        void loadDetail();
+      } else if (deleteMode === 'permanent') {
+        const customerId = data.service.customer_id;
+        await apiFetch(`/api/services/${data.service.id}?mode=permanent`, {
+          method: 'DELETE',
+        });
+        setDeleteModalOpen(false);
+        navigate(`/customers/${customerId}`, { replace: true });
+      } else {
+        await apiFetch(`/api/services/${data.service.id}?mode=archive`, {
+          method: 'DELETE',
+        });
+        setDeleteModalOpen(false);
+        void loadDetail();
+      }
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to update archive status.');
+      setError(err instanceof ApiError ? err.message : 'Failed to update service record.');
     } finally {
-      setArchiving(false);
+      setDeleting(false);
     }
   };
 
@@ -143,9 +182,9 @@ export function ServiceDetailPage() {
   if (error && !data) {
     return (
       <div className="space-y-4">
-        <Link to="/history" className="inline-flex items-center gap-1.5 text-xs text-accent hover:underline">
+        <Link to="/archive" className="inline-flex items-center gap-1.5 text-xs text-accent hover:underline">
           <ArrowLeft className="h-3.5 w-3.5" />
-          Back to Service History
+          Back to Service Archive
         </Link>
         <ErrorBanner message={error} onRetry={() => void loadDetail()} />
       </div>
@@ -155,7 +194,9 @@ export function ServiceDetailPage() {
   if (!data) return null;
 
   const { service, payments, files } = data;
-  const outstanding = Number(service.balance_amount ?? Math.max(0, Number(service.total_amount) - Number(service.amount_paid)));
+  const outstanding = Number(
+    service.balance_amount ?? Math.max(0, Number(service.total_amount) - Number(service.amount_paid))
+  );
 
   return (
     <div className="space-y-6">
@@ -164,11 +205,11 @@ export function ServiceDetailPage() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <Link
-            to="/history"
+            to="/archive"
             className="mb-2 inline-flex items-center gap-1.5 text-xs font-medium text-text-secondary hover:text-text-primary"
           >
             <ArrowLeft className="h-3.5 w-3.5" />
-            Service History
+            Service Archive
           </Link>
           <div className="flex flex-wrap items-center gap-2.5">
             <h1 className="text-xl font-semibold tracking-tight text-text-primary">
@@ -202,7 +243,7 @@ export function ServiceDetailPage() {
           </button>
           <button
             type="button"
-            onClick={() => setArchiveConfirmOpen(true)}
+            onClick={() => void openDeleteModal('archive')}
             className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-xs font-medium text-text-secondary hover:bg-bg"
           >
             {service.archived_at ? (
@@ -216,6 +257,14 @@ export function ServiceDetailPage() {
                 Archive
               </>
             )}
+          </button>
+          <button
+            type="button"
+            onClick={() => void openDeleteModal('permanent')}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-error/30 bg-surface px-3 py-2 text-xs font-medium text-error hover:bg-error-soft"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Delete
           </button>
           {!service.archived_at && (
             <button
@@ -258,15 +307,26 @@ export function ServiceDetailPage() {
         </div>
       </div>
 
-      {/* Metadata Details */}
-      <div className="zb-card p-5 grid grid-cols-1 gap-4 sm:grid-cols-3 text-sm">
+      {/* Separate Service Date vs Record Upload Date + Metadata */}
+      <div className="zb-card p-5 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 text-sm">
         <div>
-          <p className="text-xs text-text-muted">Tank Details</p>
-          <p className="mt-0.5 font-medium">{service.tank_details || '—'}</p>
+          <p className="text-xs text-text-muted">Actual Service Date</p>
+          <p className="mt-0.5 font-semibold text-accent">
+            {formatServiceDate(service.service_date)}
+          </p>
         </div>
         <div>
-          <p className="text-xs text-text-muted">Next Due Date</p>
-          <p className="mt-0.5 font-medium">{formatServiceDate(service.next_due_date)}</p>
+          <p className="text-xs text-text-muted">Record Upload Date (IST)</p>
+          <p className="mt-0.5 font-medium text-text-primary">
+            {formatDateTimeIst(service.created_at)}
+          </p>
+        </div>
+        <div>
+          <p className="text-xs text-text-muted">Tank Details &amp; Reminder</p>
+          <p className="mt-0.5 font-medium">
+            {service.tank_details || '—'}
+            {service.next_due_date ? ` • Due ${formatServiceDate(service.next_due_date)}` : ''}
+          </p>
         </div>
         <div>
           <p className="text-xs text-text-muted">Description / Notes</p>
@@ -389,20 +449,81 @@ export function ServiceDetailPage() {
         onSaved={() => void loadDetail()}
       />
 
-      <ConfirmDialog
-        open={archiveConfirmOpen}
-        onClose={() => setArchiveConfirmOpen(false)}
-        onConfirm={() => void handleArchiveToggle()}
-        title={service.archived_at ? 'Restore Service Record' : 'Archive Service Record'}
-        message={
-          service.archived_at
-            ? 'Restore this service record to active history and reports?'
-            : 'Archive this service record? It will be hidden from active metrics while keeping payments and files intact for audit.'
+      {/* Safe Deletion / Archive Dialog */}
+      <Modal
+        open={deleteModalOpen}
+        onClose={() => setDeleteModalOpen(false)}
+        title={
+          deleteMode === 'permanent'
+            ? 'Permanently Delete Service Record'
+            : service.archived_at
+              ? 'Restore Service Record'
+              : 'Archive Service Record'
         }
-        confirmLabel={service.archived_at ? 'Restore Service' : 'Archive Service'}
-        danger={!service.archived_at}
-        loading={archiving}
-      />
+        maxWidthClass="max-w-md"
+      >
+        <div className="space-y-4">
+          {deleteMode === 'permanent' ? (
+            <div className="rounded-lg border border-error/30 bg-error-soft p-3.5 text-xs text-error space-y-2">
+              <div className="flex items-center gap-2 font-semibold">
+                <AlertTriangle className="h-4 w-4 shrink-0" />
+                <span>Deletes Only This Service (Customer Stays Intact)</span>
+              </div>
+              <p>
+                Permanently deleting this <strong>{service.service_type}</strong> record on{' '}
+                <strong>{formatServiceDate(service.service_date)}</strong> will remove:
+              </p>
+              {impact ? (
+                <ul className="list-disc pl-5 space-y-0.5">
+                  <li>{impact.payments_count} linked payment record(s)</li>
+                  <li>{impact.reminders_count} linked reminder(s)</li>
+                  <li>{impact.files_count} attached file(s) from private storage</li>
+                </ul>
+              ) : (
+                <p>Checking linked records...</p>
+              )}
+              <p className="font-medium">
+                The customer profile ({service.customers?.full_name}) will NOT be deleted.
+              </p>
+            </div>
+          ) : (
+            <p className="text-sm text-text-secondary">
+              {service.archived_at
+                ? 'Restore this service record to active history, archive, and reports?'
+                : 'Archive this service record? Payments and attachments remain intact for audit and can be restored anytime.'}
+            </p>
+          )}
+
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setDeleteModalOpen(false)}
+              disabled={deleting}
+              className="rounded-lg border border-border px-4 py-2 text-xs font-medium"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={deleting}
+              onClick={() => void handleConfirmDelete()}
+              className={`rounded-lg px-4 py-2 text-xs font-medium disabled:opacity-50 ${
+                deleteMode === 'permanent' || !service.archived_at
+                  ? 'bg-error text-white hover:opacity-90'
+                  : 'zb-btn-primary'
+              }`}
+            >
+              {deleting
+                ? 'Processing...'
+                : deleteMode === 'permanent'
+                  ? 'Permanently Delete Service'
+                  : service.archived_at
+                    ? 'Restore Service'
+                    : 'Archive Service'}
+            </button>
+          </div>
+        </div>
+      </Modal>
 
       <Modal
         open={Boolean(correctTarget)}

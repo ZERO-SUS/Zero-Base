@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArchiveRestore, MapPin, Phone, Search, UserPlus } from 'lucide-react';
-import { CustomerFormModal } from '../components/customers/CustomerFormModal';
+import { ArchiveRestore, MapPin, Phone, Plus, Search } from 'lucide-react';
+import { ServiceFormModal } from '../components/services/ServiceFormModal';
 import { Badge } from '../components/ui/Badge';
 import { EmptyState, ErrorBanner, SkeletonCard } from '../components/ui/Feedback';
 import { apiFetch, ApiError } from '../lib/api';
@@ -14,7 +14,7 @@ export function CustomersPage() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [modalOpen, setModalOpen] = useState(false);
+  const [addServiceOpen, setAddServiceOpen] = useState(false);
 
   const loadCustomers = useCallback(async () => {
     setLoading(true);
@@ -63,11 +63,11 @@ export function CustomersPage() {
 
         <button
           type="button"
-          onClick={() => setModalOpen(true)}
+          onClick={() => setAddServiceOpen(true)}
           className="zb-btn-primary inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-medium self-start sm:self-auto"
         >
-          <UserPlus className="h-3.5 w-3.5" />
-          Add Customer
+          <Plus className="h-3.5 w-3.5" />
+          Add Service
         </button>
       </div>
 
@@ -107,15 +107,15 @@ export function CustomersPage() {
           description={
             query
               ? 'No customer records matched your search query.'
-              : 'Add your first customer to begin tracking services and payments.'
+              : 'Use Add Service to create a new customer and service record together.'
           }
           action={
             <button
               type="button"
-              onClick={() => setModalOpen(true)}
+              onClick={() => setAddServiceOpen(true)}
               className="zb-btn-primary rounded-lg px-4 py-2 text-xs font-medium"
             >
-              Add Customer
+              Add Service
             </button>
           }
         />
@@ -195,11 +195,12 @@ export function CustomersPage() {
         </div>
       )}
 
-      <CustomerFormModal
-        open={modalOpen}
-        onClose={() => setModalOpen(false)}
-        onSaved={(c) => {
-          navigate(`/customers/${c.id}`);
+      <ServiceFormModal
+        open={addServiceOpen}
+        onClose={() => setAddServiceOpen(false)}
+        onSaved={(_srv, cust) => {
+          if (cust) navigate(`/customers/${cust.id}`);
+          else void loadCustomers();
         }}
       />
     </div>

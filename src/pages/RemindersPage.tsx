@@ -4,8 +4,7 @@ import {
   Bell,
   Calendar,
   Check,
-  Clock,
-  PhoneCall,
+  Edit3,
   Plus,
   Search,
   XCircle,
@@ -26,14 +25,11 @@ interface RemindersResponse {
 
 const TABS: Array<{ label: string; value: string }> = [
   { label: 'All Active', value: '' },
-  { label: 'Overdue', value: 'Overdue' },
-  { label: 'Due Today', value: 'Due Today' },
   { label: 'Upcoming', value: 'Upcoming' },
-  { label: 'Contacted', value: 'Contacted' },
-  { label: 'Confirmed', value: 'Confirmed' },
-  { label: 'Snoozed', value: 'Snoozed' },
+  { label: 'Due Today', value: 'Due Today' },
+  { label: 'Overdue', value: 'Overdue' },
   { label: 'Completed', value: 'Completed' },
-  { label: 'Dismissed', value: 'Dismissed' },
+  { label: 'Cancelled', value: 'Cancelled' },
 ];
 
 export function RemindersPage() {
@@ -43,13 +39,10 @@ export function RemindersPage() {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  const [dateModal, setDateModal] = useState<{
-    reminder: ReminderRecord;
-    mode: 'edit' | 'snooze';
-  } | null>(null);
-  const [modalDate, setModalDate] = useState('');
+  const [editModal, setEditModal] = useState<ReminderRecord | null>(null);
+  const [editDate, setEditDate] = useState('');
+  const [editNotes, setEditNotes] = useState('');
 
-  // Create custom reminder modal
   const [createOpen, setCreateOpen] = useState(false);
   const [custQuery, setCustQuery] = useState('');
   const [custResults, setCustResults] = useState<Customer[]>([]);
@@ -173,7 +166,7 @@ export function RemindersPage() {
         <div>
           <h1 className="text-xl font-semibold tracking-tight text-text-primary">Reminders</h1>
           <p className="text-xs text-text-secondary">
-            Calculated in India Standard Time (Asia/Kolkata). Reminders never auto-create completed services.
+            Optional follow-ups calculated in Asia/Kolkata (IST). Never auto-creates completed services.
           </p>
         </div>
 
@@ -234,13 +227,14 @@ export function RemindersPage() {
       ) : !data || data.reminders.length === 0 ? (
         <EmptyState
           title="No reminders in this category"
-          description="Create a custom reminder or save a service with a next due date."
+          description="Reminders are optional. Schedule one when creating a service or click 'New Reminder'."
           icon={<Bell className="h-5 w-5" />}
         />
       ) : (
         <div className="space-y-3">
           {data.reminders.map((rem) => {
             const busy = busyId === rem.id;
+            const isClosed = ['completed', 'cancelled', 'dismissed'].includes(rem.status);
             return (
               <div
                 key={rem.id}
@@ -263,8 +257,10 @@ export function RemindersPage() {
                   </p>
                   {rem.services && (
                     <p className="text-[11px] text-text-muted">
-                      Previous service: {rem.services.service_type} on{' '}
-                      {formatServiceDate(rem.services.service_date)}
+                      Linked service:{' '}
+                      <Link to={`/services/${rem.services.id}`} className="text-accent hover:underline">
+                        {rem.services.service_type} ({formatServiceDate(rem.services.service_date)})
+                      </Link>
                     </p>
                   )}
                   {rem.notes && <p className="text-[11px] text-text-secondary">{rem.notes}</p>}
@@ -275,67 +271,41 @@ export function RemindersPage() {
                     type="button"
                     disabled={busy}
                     onClick={() => {
-                      setDateModal({ reminder: rem, mode: 'edit' });
-                      setModalDate(rem.due_date);
+                      setEditModal(rem);
+                      setEditDate(rem.due_date);
+                      setEditNotes(rem.notes ?? '');
                     }}
                     className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs font-medium hover:bg-bg disabled:opacity-50"
                   >
-                    <Calendar className="h-3.5 w-3.5" />
-                    Edit Date
+                    <Edit3 className="h-3.5 w-3.5" />
+                    Edit / Reschedule
                   </button>
 
-                  {rem.status !== 'contacted' && (
+                  {!isClosed && (
                     <button
                       type="button"
                       disabled={busy}
                       onClick={() =>
-                        void updateReminderStatus(rem.id, { status: 'contacted' })
+                        void updateReminderStatus(rem.id, { status: 'completed' })
                       }
-                      className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs font-medium hover:bg-bg disabled:opacity-50"
-                    >
-                      <PhoneCall className="h-3.5 w-3.5" />
-                      Contacted
-                    </button>
-                  )}
-
-                  {rem.status !== 'confirmed' && (
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() =>
-                        void updateReminderStatus(rem.id, { status: 'confirmed' })
-                      }
-                      className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs font-medium hover:bg-bg disabled:opacity-50"
+                      className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-success hover:bg-success-soft disabled:opacity-50"
                     >
                       <Check className="h-3.5 w-3.5" />
-                      Confirm
+                      Completed
                     </button>
                   )}
 
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => {
-                      setDateModal({ reminder: rem, mode: 'snooze' });
-                      setModalDate(rem.due_date);
-                    }}
-                    className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs font-medium hover:bg-bg disabled:opacity-50"
-                  >
-                    <Clock className="h-3.5 w-3.5" />
-                    Snooze
-                  </button>
-
-                  {rem.status !== 'dismissed' && (
+                  {!isClosed && (
                     <button
                       type="button"
                       disabled={busy}
                       onClick={() =>
-                        void updateReminderStatus(rem.id, { status: 'dismissed' })
+                        void updateReminderStatus(rem.id, { status: 'cancelled' })
                       }
                       className="inline-flex items-center gap-1 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs font-medium text-text-muted hover:bg-error-soft hover:text-error disabled:opacity-50"
                     >
                       <XCircle className="h-3.5 w-3.5" />
-                      Dismiss
+                      Cancel
                     </button>
                   )}
 
@@ -345,8 +315,8 @@ export function RemindersPage() {
                     onClick={() => handleCreateServiceFromReminder(rem)}
                     className="zb-btn-primary inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-xs font-medium disabled:opacity-50"
                   >
-                    <Plus className="h-3.5 w-3.5" />
-                    Create Service
+                    <Calendar className="h-3.5 w-3.5" />
+                    Add Service
                   </button>
                 </div>
               </div>
@@ -355,49 +325,59 @@ export function RemindersPage() {
         </div>
       )}
 
-      {/* Edit Due Date / Snooze Modal */}
+      {/* Edit / Reschedule Reminder Modal */}
       <Modal
-        open={Boolean(dateModal)}
-        onClose={() => setDateModal(null)}
-        title={dateModal?.mode === 'snooze' ? 'Snooze Reminder' : 'Edit Reminder Due Date'}
+        open={Boolean(editModal)}
+        onClose={() => setEditModal(null)}
+        title="Edit / Reschedule Reminder"
         maxWidthClass="max-w-sm"
       >
         <form
           onSubmit={async (e) => {
             e.preventDefault();
-            if (!dateModal) return;
-            await updateReminderStatus(
-              dateModal.reminder.id,
-              dateModal.mode === 'snooze'
-                ? { status: 'snoozed', snoozed_until: modalDate }
-                : { due_date: modalDate, status: 'active' }
-            );
-            setDateModal(null);
+            if (!editModal) return;
+            await updateReminderStatus(editModal.id, {
+              due_date: editDate,
+              notes: editNotes.trim() || null,
+              status: 'active',
+            });
+            setEditModal(null);
           }}
           className="space-y-4"
         >
           <div>
             <label className="mb-1.5 block text-xs font-medium text-text-secondary">
-              {dateModal?.mode === 'snooze' ? 'Snooze Until Date' : 'New Due Date'}
+              Due Date
             </label>
             <input
               type="date"
               required
-              value={modalDate}
-              onChange={(e) => setModalDate(e.target.value)}
+              value={editDate}
+              onChange={(e) => setEditDate(e.target.value)}
+              className="w-full rounded-lg border px-3 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-text-secondary">
+              Notes
+            </label>
+            <textarea
+              rows={2}
+              value={editNotes}
+              onChange={(e) => setEditNotes(e.target.value)}
               className="w-full rounded-lg border px-3 py-2 text-sm"
             />
           </div>
           <div className="flex justify-end gap-2">
             <button
               type="button"
-              onClick={() => setDateModal(null)}
+              onClick={() => setEditModal(null)}
               className="rounded-lg border border-border px-3.5 py-1.5 text-xs font-medium"
             >
               Cancel
             </button>
             <button type="submit" className="zb-btn-primary rounded-lg px-3.5 py-1.5 text-xs font-medium">
-              Save
+              Save Reminder
             </button>
           </div>
         </form>
@@ -484,7 +464,7 @@ export function RemindersPage() {
               rows={2}
               value={newNotes}
               onChange={(e) => setNewNotes(e.target.value)}
-              placeholder="Customer requested callback after 3 months..."
+              placeholder="Customer requested callback after 6 months..."
               className="w-full rounded-lg border px-3 py-2 text-sm"
             />
           </div>

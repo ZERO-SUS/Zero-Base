@@ -1,14 +1,17 @@
 import { useState } from 'react';
-import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   BarChart3,
   Bell,
   CalendarClock,
+  CalendarDays,
   CreditCard,
   LayoutDashboard,
   LogOut,
   Menu,
   Moon,
+  Plus,
+  Search,
   Settings,
   Sun,
   Users,
@@ -17,9 +20,12 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
 import { resolveIsDark } from '../../lib/theme';
+import { ServiceFormModal } from '../services/ServiceFormModal';
 
 const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
+  { to: '/archive', label: 'Service Archive', icon: CalendarDays, end: false },
+  { to: '/search', label: 'Search', icon: Search, end: false },
   { to: '/history', label: 'Service History', icon: CalendarClock, end: false },
   { to: '/customers', label: 'Customers', icon: Users, end: false },
   { to: '/reminders', label: 'Reminders', icon: Bell, end: false },
@@ -32,7 +38,9 @@ export function AppShell() {
   const { user, settings, signOut } = useAuth();
   const { mode, setMode } = useTheme();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [addServiceOpen, setAddServiceOpen] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
   const isDark = resolveIsDark(mode);
 
   const appName = settings.app_name || 'ZERO BASE';
@@ -75,18 +83,29 @@ export function AppShell() {
     <div className="min-h-screen bg-bg text-text-primary lg:flex">
       {/* Desktop Sidebar */}
       <aside className="hidden lg:sticky lg:top-0 lg:flex lg:h-screen lg:w-64 lg:shrink-0 lg:flex-col lg:border-r lg:border-border lg:bg-sidebar">
-        <div className="flex h-16 items-center justify-between border-b border-border px-5">
-          <div className="flex items-center gap-2.5">
-            <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-accent text-xs font-bold tracking-tight text-accent-fg">
-              ZB
-            </span>
-            <span className="text-sm font-semibold tracking-[0.14em] text-text-primary uppercase">
-              {appName}
-            </span>
-          </div>
+        <div className="flex h-16 items-center gap-3 border-b border-border px-5">
+          <img
+            src="/assets/zero-base-logo.png"
+            alt="ZERO BASE"
+            className="h-8 w-8 shrink-0 object-contain"
+          />
+          <span className="text-sm font-semibold tracking-[0.14em] text-text-primary uppercase">
+            {appName}
+          </span>
         </div>
 
-        <div className="flex-1 overflow-y-auto py-4">{renderLinks()}</div>
+        <div className="px-3 pt-4 pb-2">
+          <button
+            type="button"
+            onClick={() => setAddServiceOpen(true)}
+            className="zb-btn-primary flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold tracking-wide uppercase"
+          >
+            <Plus className="h-4 w-4" />
+            Add Service
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto py-2">{renderLinks()}</div>
 
         <div className="border-t border-border p-3 space-y-2">
           <div className="flex items-center justify-between rounded-lg bg-bg px-3 py-2">
@@ -117,9 +136,9 @@ export function AppShell() {
         </div>
       </aside>
 
-      {/* Mobile Header + Drawer */}
+      {/* Mobile Header */}
       <div className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-border bg-sidebar px-4 lg:hidden">
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5 min-w-0">
           <button
             type="button"
             onClick={() => setMobileMenuOpen(true)}
@@ -128,23 +147,39 @@ export function AppShell() {
           >
             <Menu className="h-5 w-5" />
           </button>
-          <span className="text-xs font-semibold tracking-[0.14em] text-text-primary uppercase">
+          <img
+            src="/assets/zero-base-logo.png"
+            alt="ZERO BASE"
+            className="h-6 w-6 shrink-0 object-contain"
+          />
+          <span className="text-xs font-semibold tracking-[0.14em] text-text-primary uppercase truncate">
             {appName}
           </span>
           {currentNav && (
-            <span className="text-xs text-text-muted">/ {currentNav.label}</span>
+            <span className="hidden sm:inline text-xs text-text-muted">/ {currentNav.label}</span>
           )}
         </div>
-        <button
-          type="button"
-          onClick={toggleQuickTheme}
-          aria-label="Toggle color theme"
-          className="rounded-lg p-1.5 text-text-secondary hover:bg-bg hover:text-text-primary"
-        >
-          {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => setAddServiceOpen(true)}
+            className="zb-btn-primary inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Add
+          </button>
+          <button
+            type="button"
+            onClick={toggleQuickTheme}
+            aria-label="Toggle color theme"
+            className="rounded-lg p-1.5 text-text-secondary hover:bg-bg hover:text-text-primary"
+          >
+            {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          </button>
+        </div>
       </div>
 
+      {/* Mobile Drawer */}
       {mobileMenuOpen && (
         <div className="fixed inset-0 z-50 flex lg:hidden">
           <div
@@ -153,9 +188,16 @@ export function AppShell() {
           />
           <aside className="relative z-10 flex h-full w-72 max-w-[85vw] flex-col border-r border-border bg-sidebar">
             <div className="flex h-14 items-center justify-between border-b border-border px-4">
-              <span className="text-sm font-semibold tracking-[0.14em] uppercase">
-                {appName}
-              </span>
+              <div className="flex items-center gap-2.5">
+                <img
+                  src="/assets/zero-base-logo.png"
+                  alt="ZERO BASE"
+                  className="h-7 w-7 object-contain"
+                />
+                <span className="text-sm font-semibold tracking-[0.14em] uppercase">
+                  {appName}
+                </span>
+              </div>
               <button
                 type="button"
                 onClick={() => setMobileMenuOpen(false)}
@@ -198,7 +240,7 @@ export function AppShell() {
         aria-label="Mobile Quick Navigation"
         className="fixed bottom-0 left-0 right-0 z-30 grid grid-cols-5 border-t border-border bg-sidebar py-1.5 lg:hidden"
       >
-        {[NAV_ITEMS[0], NAV_ITEMS[1], NAV_ITEMS[2], NAV_ITEMS[3], NAV_ITEMS[4]].map((item) => {
+        {[NAV_ITEMS[0], NAV_ITEMS[1], NAV_ITEMS[2], NAV_ITEMS[4], NAV_ITEMS[5]].map((item) => {
           const Icon = item.icon;
           return (
             <NavLink
@@ -217,6 +259,14 @@ export function AppShell() {
           );
         })}
       </nav>
+
+      <ServiceFormModal
+        open={addServiceOpen}
+        onClose={() => setAddServiceOpen(false)}
+        onSaved={(service) => {
+          navigate(`/services/${service.id}`);
+        }}
+      />
     </div>
   );
 }

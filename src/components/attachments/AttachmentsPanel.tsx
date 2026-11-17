@@ -38,8 +38,9 @@ export function AttachmentsPanel({
   onChanged,
 }: AttachmentsPanelProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [category, setCategory] = useState<FileCategory>('Before-cleaning photos');
+  const [category, setCategory] = useState<FileCategory>('Before-Service Area Photos');
   const [uploading, setUploading] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const [failedUploads, setFailedUploads] = useState<FailedUpload[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [previewItem, setPreviewItem] = useState<{
@@ -81,16 +82,19 @@ export function AttachmentsPanel({
     }
   };
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selected = Array.from(e.target.files ?? []);
+  const processFiles = async (selected: File[]) => {
     if (selected.length === 0) return;
-
     setError(null);
     setUploading(true);
     for (const file of selected) {
       await uploadSingleFile(file, category);
     }
     setUploading(false);
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selected = Array.from(e.target.files ?? []);
+    await processFiles(selected);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -134,14 +138,26 @@ export function AttachmentsPanel({
   };
 
   return (
-    <div className="zb-card p-5 space-y-4">
+    <div
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragOver(false);
+        void processFiles(Array.from(e.dataTransfer.files));
+      }}
+      className={`zb-card p-5 space-y-4 transition ${dragOver ? 'border-accent bg-accent-soft/30' : ''}`}
+    >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="text-sm font-semibold text-text-primary">
-            Cloud Photos & Documents (Private Supabase Storage)
+            Service Attachments &amp; Photos (Private Supabase Storage)
           </h3>
           <p className="text-xs text-text-secondary">
-            Stored privately in bucket <code>zero-base-files</code> with 5-minute signed URLs
+            Drag &amp; drop files here or click Upload • Stored privately in <code>zero-base-files</code>
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -161,7 +177,7 @@ export function AttachmentsPanel({
             ref={fileInputRef}
             type="file"
             multiple
-            accept="image/jpeg,image/png,image/webp,image/gif,application/pdf"
+            accept="image/jpeg,image/png,image/webp,application/pdf"
             onChange={handleFileChange}
             className="hidden"
           />
@@ -212,7 +228,7 @@ export function AttachmentsPanel({
 
       {files.length === 0 ? (
         <div className="rounded-lg border border-dashed border-border py-8 text-center text-xs text-text-muted">
-          No photos or bills uploaded yet for this service.
+          No photos or bills uploaded yet for this service. Drag files here to upload.
         </div>
       ) : (
         <div className="divide-y divide-border rounded-lg border border-border">
@@ -239,7 +255,7 @@ export function AttachmentsPanel({
                     <div className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-text-muted">
                       <Badge variant="accent">{f.category}</Badge>
                       <span>{formatBytes(f.file_size)}</span>
-                      <span>• {formatDateTimeIst(f.uploaded_at)}</span>
+                      <span>• Uploaded {formatDateTimeIst(f.uploaded_at)}</span>
                     </div>
                   </div>
                 </div>
@@ -292,6 +308,7 @@ export function AttachmentsPanel({
               <img
                 src={previewItem.url}
                 alt={previewItem.record.file_name}
+                loading="lazy"
                 className="mx-auto max-h-[65vh] w-auto object-contain"
               />
             </div>

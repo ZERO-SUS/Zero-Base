@@ -41,8 +41,15 @@ export function ResetPasswordPage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-bg px-4">
       <div className="zb-card w-full max-w-md p-6">
-        <h1 className="text-base font-semibold text-text-primary">Set New Password</h1>
-        <p className="mt-1 text-xs text-text-secondary">
+        <div className="mb-4 flex items-center gap-2.5">
+          <img
+            src="/assets/zero-base-logo.png"
+            alt="ZERO BASE"
+            className="h-8 w-8 object-contain"
+          />
+          <h1 className="text-base font-semibold text-text-primary">Set New Password</h1>
+        </div>
+        <p className="text-xs text-text-secondary">
           Choose a strong password for your ZERO BASE administrator account.
         </p>
 
