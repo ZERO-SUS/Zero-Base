@@ -10,6 +10,7 @@ import { healthRoutes } from './routes/health';
 import { paymentRoutes } from './routes/payments';
 import { reminderRoutes } from './routes/reminders';
 import { reportRoutes } from './routes/reports';
+import { searchRoutes } from './routes/search';
 import { serviceRoutes } from './routes/services';
 import { settingsRoutes } from './routes/settings';
 import type { AppBindings, ServiceOverrides } from './types';
@@ -17,7 +18,6 @@ import type { AppBindings, ServiceOverrides } from './types';
 export function createApp(overrides?: ServiceOverrides): Hono<AppBindings> {
   const app = new Hono<AppBindings>();
 
-  // Security headers + safe request logging (no secrets, tokens, or customer PII)
   app.use('*', async (c, next) => {
     const requestId = crypto.randomUUID();
     const start = Date.now();
@@ -42,7 +42,6 @@ export function createApp(overrides?: ServiceOverrides): Hono<AppBindings> {
     c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
   });
 
-  // Strict CORS origin allowlist (Pages URL + local dev)
   app.use('*', async (c, next) => {
     const allowedRaw = c.env.ALLOWED_ORIGINS ?? 'https://zero-base.pages.dev,http://localhost:5173';
     const allowedList = allowedRaw
@@ -65,7 +64,6 @@ export function createApp(overrides?: ServiceOverrides): Hono<AppBindings> {
     return corsMiddleware(c, next);
   });
 
-  // Rate limiting on API routes (in-memory sliding window per IP, zero paid deps)
   app.use(
     '/api/*',
     rateLimitMiddleware({
@@ -75,16 +73,15 @@ export function createApp(overrides?: ServiceOverrides): Hono<AppBindings> {
     })
   );
 
-  // Public health endpoints (`/health` and `/api/health`)
   app.route('/', healthRoutes);
 
-  // All /api/* routes require verified Supabase JWT + Owner Allowlist authorization
   app.use('/api/*', createAuthMiddleware(overrides));
 
   app.route('/api', authRoutes);
   app.route('/api', dashboardRoutes);
   app.route('/api', customerRoutes);
   app.route('/api', serviceRoutes);
+  app.route('/api', searchRoutes);
   app.route('/api', paymentRoutes);
   app.route('/api', fileRoutes);
   app.route('/api', reminderRoutes);

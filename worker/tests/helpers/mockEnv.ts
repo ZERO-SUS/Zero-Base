@@ -185,6 +185,7 @@ class MockQueryBuilder {
   private filters: Array<(row: Record<string, unknown>) => boolean> = [];
   private orders: Array<{ col: string; asc: boolean }> = [];
   private limitNum: number | null = null;
+  private rangeBounds: [number, number] | null = null;
   private op: 'select' | 'insert' | 'update' | 'delete' = 'select';
   private payload: Record<string, unknown> | Array<Record<string, unknown>> | null = null;
 
@@ -193,7 +194,7 @@ class MockQueryBuilder {
     private table: keyof InMemoryDb
   ) {}
 
-  select(_cols?: string) {
+  select(_cols?: string, _opts?: { count?: string; head?: boolean }) {
     return this;
   }
 
@@ -264,11 +265,18 @@ class MockQueryBuilder {
     return this;
   }
 
+  range(from: number, to: number) {
+    this.rangeBounds = [from, to];
+    return this;
+  }
+
   private enrichRow(row: Record<string, unknown>): Record<string, unknown> {
     const copy = { ...row };
     if (this.table === 'services') {
       const cust = this.db.customers.find((c) => c.id === row.customer_id);
       if (cust) copy.customers = { ...cust };
+      copy.payments = this.db.payments.filter((p) => p.service_id === row.id);
+      copy.reminders = this.db.reminders.filter((r) => r.service_id === row.id);
     }
     if (this.table === 'payments') {
       const srv = this.db.services.find((s) => s.id === row.service_id);
@@ -286,7 +294,7 @@ class MockQueryBuilder {
     return copy;
   }
 
-  private execute(): { data: unknown; error: null | { message: string } } {
+  private execute(): { data: unknown; count?: number; error: null | { message: string } } {
     const rows = this.db[this.table] as Array<Record<string, unknown>>;
 
     if (this.op === 'insert' && this.payload) {
@@ -344,7 +352,7 @@ class MockQueryBuilder {
 
         inserted.push(this.enrichRow(rec));
       }
-      return { data: inserted, error: null };
+      return { data: inserted, count: inserted.length, error: null };
     }
 
     if (this.op === 'update' && this.payload) {
@@ -354,7 +362,7 @@ class MockQueryBuilder {
         if (this.table === 'services') recalcServiceFinancials(this.db, String(r.id));
         if (this.table === 'payments') recalcServiceFinancials(this.db, String(r.service_id));
       }
-      return { data: matched.map((r) => this.enrichRow(r)), error: null };
+      return { data: matched.map((r) => this.enrichRow(r)), count: matched.length, error: null };
     }
 
     if (this.op === 'delete') {
@@ -365,10 +373,11 @@ class MockQueryBuilder {
         else remaining.push(r);
       }
       (this.db[this.table] as Array<Record<string, unknown>>) = remaining;
-      return { data: deleted, error: null };
+      return { data: deleted, count: deleted.length, error: null };
     }
 
     let result = rows.filter((r) => this.filters.every((f) => f(r))).map((r) => this.enrichRow(r));
+    const totalCount = result.length;
     for (let i = this.orders.length - 1; i >= 0; i -= 1) {
       const { col, asc } = this.orders[i];
       result.sort((a, b) => {
@@ -377,10 +386,12 @@ class MockQueryBuilder {
         return asc ? av.localeCompare(bv) : bv.localeCompare(av);
       });
     }
-    if (this.limitNum !== null) {
+    if (this.rangeBounds) {
+      result = result.slice(this.rangeBounds[0], this.rangeBounds[1] + 1);
+    } else if (this.limitNum !== null) {
       result = result.slice(0, this.limitNum);
     }
-    return { data: result, error: null };
+    return { data: result, count: totalCount, error: null };
   }
 
   async single() {
@@ -398,8 +409,8 @@ class MockQueryBuilder {
     return { data: arr[0] ?? null, error: null };
   }
 
-  then<TResult1 = { data: unknown; error: null | { message: string } }>(
-    onfulfilled?: ((value: { data: unknown; error: null | { message: string } }) => TResult1) | null
+  then<TResult1 = { data: unknown; count?: number; error: null | { message: string } }>(
+    onfulfilled?: ((value: { data: unknown; count?: number; error: null | { message: string } }) => TResult1) | null
   ) {
     return Promise.resolve(this.execute()).then(onfulfilled ?? undefined);
   }
@@ -426,15 +437,14 @@ export function createTestHarness() {
       return new MockQueryBuilder(db, table);
     },
     async rpc(name: string, params?: Record<string, unknown>) {
-      if (name === 'find_duplicate_customers') {
+      if (name === 'find_similar_customers' || name === 'find_duplicate_customers') {
         const phone = String(params?.p_phone ?? '');
         const norm = normalizePhone(phone);
         const matches = db.customers.filter((c) => {
           const p1 = normalizePhone(c.phone_number);
           const p2 = normalizePhone(c.alternate_phone);
           return (
-            c.phone_number === phone ||
-            c.alternate_phone === phone ||
+            (phone && (c.phone_number === phone || c.alternate_phone === phone)) ||
             (norm.length >= 6 &&
               (p1 === norm ||
                 p2 === norm ||
@@ -442,12 +452,130 @@ export function createTestHarness() {
                 (p2.length > 0 && p2.slice(-10) === norm.slice(-10))))
           );
         });
-        return { data: matches, error: null };
+        return {
+          data: matches.map((m) => ({ ...m, match_reason: 'Matching phone number' })),
+          error: null,
+        };
+      }
+
+      if (name === 'create_unified_service') {
+        const p = params ?? {};
+        if (p.p_idempotency_key) {
+          const existing = db.services.find((s) => s.idempotency_key === p.p_idempotency_key);
+          if (existing) {
+            const cust = db.customers.find((c) => c.id === existing.customer_id);
+            return { data: { customer: cust, service: existing, deduplicated: true }, error: null };
+          }
+        }
+
+        let customer: Record<string, unknown>;
+        if (p.p_customer_id) {
+          const found = db.customers.find((c) => c.id === p.p_customer_id);
+          if (!found) return { data: null, error: { message: 'Customer not found' } };
+          customer = found;
+        } else {
+          customer = {
+            id: crypto.randomUUID(),
+            customer_code: `ZB-${String(db.customerSeq++).padStart(5, '0')}`,
+            full_name: p.p_customer_full_name,
+            phone_number: p.p_customer_phone,
+            alternate_phone: p.p_customer_alt_phone ?? null,
+            address: p.p_customer_address,
+            area: p.p_customer_area ?? null,
+            notes: p.p_customer_notes ?? null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            archived_at: null,
+          };
+          db.customers.push(customer);
+        }
+
+        const service: Record<string, unknown> = {
+          id: crypto.randomUUID(),
+          customer_id: customer.id,
+          service_date: p.p_service_date,
+          service_type: p.p_service_type,
+          tank_details: p.p_tank_details ?? null,
+          description: p.p_description ?? null,
+          price: Number(p.p_price ?? 0),
+          discount: Number(p.p_discount ?? 0),
+          next_due_date: p.p_reminder_enabled ? p.p_reminder_date : null,
+          notes: p.p_notes ?? null,
+          idempotency_key: p.p_idempotency_key ?? null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          archived_at: null,
+        };
+        db.services.push(service);
+        recalcServiceFinancials(db, String(service.id));
+
+        if (p.p_payment_amount && Number(p.p_payment_amount) > 0) {
+          db.payments.push({
+            id: crypto.randomUUID(),
+            service_id: service.id,
+            customer_id: customer.id,
+            amount: Number(p.p_payment_amount),
+            payment_type: 'payment',
+            payment_method: p.p_payment_method ?? 'Cash',
+            reference_number: p.p_payment_ref ?? null,
+            payment_date: p.p_payment_date ?? p.p_service_date,
+            created_at: new Date().toISOString(),
+            archived_at: null,
+          });
+          recalcServiceFinancials(db, String(service.id));
+        }
+
+        let reminder: Record<string, unknown> | null = null;
+        if (p.p_reminder_enabled && p.p_reminder_date) {
+          reminder = {
+            id: crypto.randomUUID(),
+            service_id: service.id,
+            customer_id: customer.id,
+            due_date: p.p_reminder_date,
+            reminder_type: p.p_reminder_type ?? 'service_due',
+            status: 'active',
+            notes: p.p_reminder_notes ?? null,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            archived_at: null,
+          };
+          db.reminders.push(reminder);
+        }
+
+        return {
+          data: { customer, service, reminder, deduplicated: false },
+          error: null,
+        };
+      }
+
+      if (name === 'permanently_delete_service') {
+        const srvId = String(params?.p_service_id ?? '');
+        const files = db.service_files.filter((f) => f.service_id === srvId);
+        const paths = files.map((f) => String(f.storage_path));
+        db.service_files = db.service_files.filter((f) => f.service_id !== srvId);
+        db.reminders = db.reminders.filter((r) => r.service_id !== srvId);
+        db.payments = db.payments.filter((p) => p.service_id !== srvId);
+        db.services = db.services.filter((s) => s.id !== srvId);
+        return { data: { deleted_service_id: srvId, storage_paths: paths }, error: null };
+      }
+
+      if (name === 'permanently_delete_customer') {
+        const custId = String(params?.p_customer_id ?? '');
+        const files = db.service_files.filter((f) => f.customer_id === custId);
+        const paths = files.map((f) => String(f.storage_path));
+        db.service_files = db.service_files.filter((f) => f.customer_id !== custId);
+        db.reminders = db.reminders.filter((r) => r.customer_id !== custId);
+        db.payments = db.payments.filter((p) => p.customer_id !== custId);
+        db.services = db.services.filter((s) => s.customer_id !== custId);
+        db.customers = db.customers.filter((c) => c.id !== custId);
+        return { data: { deleted_customer_id: custId, storage_paths: paths }, error: null };
       }
 
       if (name === 'get_dashboard_metrics') {
         const activeCustomers = db.customers.filter((c) => !c.archived_at);
         const activeServices = db.services.filter((s) => !s.archived_at);
+        const totalBilled = activeServices.reduce((a, s) => a + Number(s.total_amount ?? 0), 0);
+        const totalCollected = activeServices.reduce((a, s) => a + Number(s.amount_paid ?? 0), 0);
         return {
           data: {
             today_ist: '2026-11-17',
@@ -459,6 +587,8 @@ export function createTestHarness() {
             upcoming_reminders: db.reminders.filter((r) => !r.archived_at && r.status === 'active').length,
             due_today: 0,
             overdue_services: 0,
+            total_recorded_revenue: totalBilled,
+            total_collected_payments: totalCollected,
             pending_payments_amount: activeServices.reduce(
               (acc, s) => acc + Number(s.balance_amount ?? 0),
               0
@@ -466,8 +596,8 @@ export function createTestHarness() {
             pending_payments_count: activeServices.filter(
               (s) => s.payment_status === 'Unpaid' || s.payment_status === 'Partially Paid'
             ).length,
-            revenue_this_month: 0,
-            revenue_this_year: 0,
+            revenue_this_month: totalCollected,
+            revenue_this_year: totalCollected,
           },
           error: null,
         };

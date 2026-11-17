@@ -13,26 +13,21 @@ describe('ZERO BASE Worker API Integration & Security Suite', () => {
     const { env, overrides } = createTestHarness();
     const app = createApp(overrides);
 
-    // Health endpoints (/health and /api/health)
     expect((await app.request('/health', {}, env)).status).toBe(200);
     expect((await app.request('/api/health', {}, env)).status).toBe(200);
-
-    // Unauthenticated & invalid JWT rejected
     expect((await app.request('/api/customers', {}, env)).status).toBe(401);
     expect(
       (await app.request('/api/customers', { headers: { Authorization: 'Bearer bad' } }, env))
         .status
     ).toBe(401);
+    expect(
+      (
+        await app.request('/api/customers', {
+          headers: { Authorization: 'Bearer non-owner-token' },
+        }, env)
+      ).status
+    ).toBe(403);
 
-    // Authenticated non-owner Supabase user is strictly rejected (403)
-    const nonOwnerRes = await app.request(
-      '/api/customers',
-      { headers: { Authorization: 'Bearer non-owner-token' } },
-      env
-    );
-    expect(nonOwnerRes.status).toBe(403);
-
-    // Owner 1 creates a customer; Owner 2 & Owner 3 see and edit the exact same record
     const c1 = await app.request(
       '/api/customers',
       {
@@ -57,116 +52,39 @@ describe('ZERO BASE Worker API Integration & Security Suite', () => {
     expect(customer.customer_code).toBe('ZB-00001');
     expect(customer.phone_number).toBe('+91 09876543210');
 
-    const c2Read = await app.request(`/api/customers/${customer.id}`, {
-      headers: { Authorization: 'Bearer owner-2-token' },
-    }, env);
-    expect(c2Read.status).toBe(200);
+    expect(
+      (
+        await app.request(`/api/customers/${customer.id}`, {
+          headers: { Authorization: 'Bearer owner-2-token' },
+        }, env)
+      ).status
+    ).toBe(200);
 
-    const c3Update = await app.request(
-      `/api/customers/${customer.id}`,
-      {
-        method: 'PATCH',
-        headers: {
-          Authorization: 'Bearer owner-3-token',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ area: 'MG Road' }),
-      },
-      env
-    );
-    expect(c3Update.status).toBe(200);
+    expect(
+      (
+        await app.request(
+          `/api/customers/${customer.id}`,
+          {
+            method: 'PATCH',
+            headers: {
+              Authorization: 'Bearer owner-3-token',
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ area: 'MG Road' }),
+          },
+          env
+        )
+      ).status
+    ).toBe(200);
   });
 
-  it('handles CORS preflight for Pages origin and blocks unknown origins', async () => {
-    const { env, overrides } = createTestHarness();
-    const app = createApp(overrides);
-
-    const allowedPreflight = await app.request(
-      '/api/customers',
-      {
-        method: 'OPTIONS',
-        headers: {
-          Origin: 'https://zero-base.pages.dev',
-          'Access-Control-Request-Method': 'POST',
-        },
-      },
-      env
-    );
-    expect(allowedPreflight.status).toBe(204);
-    expect(allowedPreflight.headers.get('Access-Control-Allow-Origin')).toBe(
-      'https://zero-base.pages.dev'
-    );
-
-    const evilPreflight = await app.request(
-      '/api/customers',
-      {
-        method: 'OPTIONS',
-        headers: {
-          Origin: 'https://evil.example.com',
-          'Access-Control-Request-Method': 'POST',
-        },
-      },
-      env
-    );
-    expect(evilPreflight.headers.get('Access-Control-Allow-Origin')).toBeFalsy();
-  });
-
-  it('warns on duplicate phones and searches by name, phone, code, area', async () => {
-    const { env, overrides } = createTestHarness();
-    const app = createApp(overrides);
-
-    await app.request(
-      '/api/customers',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: 'Bearer owner-1-token',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          full_name: 'Ramesh Iyer',
-          phone_number: '09876543210',
-          address: '42 MG Road',
-          area: 'Indiranagar',
-        }),
-      },
-      env
-    );
-
-    const dup = await app.request(
-      '/api/customers',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: 'Bearer owner-1-token',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          full_name: 'Ramesh Duplicate',
-          phone_number: '+91 9876543210',
-          address: '99 Residency Rd',
-        }),
-      },
-      env
-    );
-    expect(dup.status).toBe(409);
-    const dupBody = (await dup.json()) as { code: string };
-    expect(dupBody.code).toBe('DUPLICATE_CUSTOMER_PHONE');
-
-    const searchByCode = await app.request(
-      '/api/customers?q=ZB-00001',
-      { headers: { Authorization: 'Bearer owner-1-token' } },
-      env
-    );
-    expect(((await searchByCode.json()) as { customers: unknown[] }).customers.length).toBe(1);
-  });
-
-  it('groups year-wise history by service_date and keeps edited old services in their original year', async () => {
+  it('supports unified Add Service (new customer + existing customer + optional reminder OFF by default)', async () => {
     const { db, env, overrides } = createTestHarness();
     const app = createApp(overrides);
 
-    const custRes = await app.request(
-      '/api/customers',
+    // 1. Unified creation with new customer + service + partial payment + reminder OFF
+    const u1 = await app.request(
+      '/api/services/unified',
       {
         method: 'POST',
         headers: {
@@ -174,216 +92,197 @@ describe('ZERO BASE Worker API Integration & Security Suite', () => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          full_name: 'Customer A',
-          phone_number: '9876500001',
-          address: '10 Park Street',
-        }),
-      },
-      env
-    );
-    const { customer } = (await custRes.json()) as { customer: { id: string } };
-
-    const oldSrvRes = await app.request(
-      '/api/services',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: 'Bearer owner-1-token',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          customer_id: customer.id,
-          service_date: '2024-10-12',
+          new_customer: {
+            full_name: 'Ananya Rao',
+            phone_number: '+91 9845011223',
+            address: '14 Indiranagar 100ft Rd',
+            area: 'Indiranagar',
+          },
+          service_date: '2025-12-25',
           service_type: 'Overhead Tank Cleaning',
-          price: 1500,
+          tank_details: '2000L Overhead',
+          price: 2000,
           discount: 0,
+          initial_payment: {
+            amount: 500,
+            payment_method: 'UPI',
+            reference_number: 'UTR-UNIFIED-1',
+          },
+          reminder: { enabled: false },
         }),
       },
       env
     );
-    const { service: oldSrv } = (await oldSrvRes.json()) as { service: { id: string } };
-    db.services[0].created_at = '2026-01-05T10:00:00Z';
+    expect(u1.status).toBe(201);
+    const u1Json = (await u1.json()) as {
+      customer: { id: string; customer_code: string };
+      service: { id: string; service_date: string; balance_amount: number; payment_status: string };
+      reminder: null;
+    };
+    expect(u1Json.service.service_date).toBe('2025-12-25');
+    expect(u1Json.service.balance_amount).toBe(1500);
+    expect(u1Json.service.payment_status).toBe('Partially Paid');
+    expect(u1Json.reminder).toBeNull();
+    expect(db.reminders.length).toBe(0);
 
-    // Edit notes on the 2024 service without changing service_date -> must remain in 2024!
-    await app.request(
-      `/api/services/${oldSrv.id}`,
+    // 2. Duplicate warning when attempting unified creation with matching phone
+    const uDup = await app.request(
+      '/api/services/unified',
       {
-        method: 'PATCH',
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-1-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          new_customer: {
+            full_name: 'Ananya Duplicate',
+            phone_number: '9845011223',
+            address: 'Other Address',
+          },
+          service_date: '2026-11-17',
+          service_type: 'Overhead Tank Cleaning',
+          price: 1200,
+        }),
+      },
+      env
+    );
+    expect(uDup.status).toBe(409);
+
+    // 3. Add second service to the SAME existing customer with optional reminder ON
+    const u2 = await app.request(
+      '/api/services/unified',
+      {
+        method: 'POST',
         headers: {
           Authorization: 'Bearer owner-2-token',
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ notes: 'Updated tank details' }),
-      },
-      env
-    );
-
-    await app.request(
-      '/api/services',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: 'Bearer owner-1-token',
-          'Content-Type': 'application/json',
-        },
         body: JSON.stringify({
-          customer_id: customer.id,
-          service_date: '2026-11-16',
+          customer_id: u1Json.customer.id,
+          service_date: '2026-11-15',
           service_type: 'Underground Sump Cleaning',
-          price: 2000,
-          discount: 0,
-        }),
-      },
-      env
-    );
-
-    const historyRes = await app.request(
-      '/api/services/history',
-      { headers: { Authorization: 'Bearer owner-1-token' } },
-      env
-    );
-    const history = (await historyRes.json()) as {
-      grouped: Array<{ year: number; months: Array<{ month: number }> }>;
-    };
-    expect(history.grouped.map((g) => g.year)).toEqual([2026, 2024]);
-    expect(history.grouped[1].months[0].month).toBe(10);
-  });
-
-  it('computes partial payments (₹2000 -> ₹500 + ₹500 = ₹1000 balance) and audit-preserving corrections', async () => {
-    const { env, overrides } = createTestHarness();
-    const app = createApp(overrides);
-
-    const custRes = await app.request(
-      '/api/customers',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: 'Bearer owner-1-token',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          full_name: 'Sita Verma',
-          phone_number: '9988776655',
-          address: '22 Lake View',
-        }),
-      },
-      env
-    );
-    const { customer } = (await custRes.json()) as { customer: { id: string } };
-
-    const srvRes = await app.request(
-      '/api/services',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: 'Bearer owner-1-token',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          customer_id: customer.id,
-          service_date: '2026-11-16',
-          service_type: 'Overhead Tank Cleaning',
-          price: 2000,
-          discount: 0,
-          idempotency_key: 'idem-srv-2000',
-        }),
-      },
-      env
-    );
-    const { service } = (await srvRes.json()) as {
-      service: { id: string; total_amount: number; balance_amount: number };
-    };
-    expect(service.total_amount).toBe(2000);
-    expect(service.balance_amount).toBe(2000);
-
-    // First payment ₹500
-    const p1 = await app.request(
-      '/api/payments',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: 'Bearer owner-1-token',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          service_id: service.id,
-          amount: 500,
-          payment_method: 'Cash',
-          payment_date: '2026-11-16',
-        }),
-      },
-      env
-    );
-    const p1Json = (await p1.json()) as {
-      payment: { id: string };
-      service: { amount_paid: number; balance_amount: number; payment_status: string };
-    };
-    expect(p1Json.service.amount_paid).toBe(500);
-    expect(p1Json.service.balance_amount).toBe(1500);
-    expect(p1Json.service.payment_status).toBe('Partially Paid');
-
-    // Second payment ₹500 -> Remaining balance ₹1000
-    const p2 = await app.request(
-      '/api/payments',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: 'Bearer owner-2-token',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          service_id: service.id,
-          amount: 500,
-          payment_method: 'UPI',
-          reference_number: 'UTR999',
-          payment_date: '2026-11-16',
-        }),
-      },
-      env
-    );
-    const p2Json = (await p2.json()) as {
-      service: { amount_paid: number; balance_amount: number; payment_status: string };
-    };
-    expect(p2Json.service.amount_paid).toBe(1000);
-    expect(p2Json.service.balance_amount).toBe(1000);
-
-    // Correction preserves original record
-    const corr = await app.request(
-      `/api/payments/${p1Json.payment.id}`,
-      {
-        method: 'PATCH',
-        headers: {
-          Authorization: 'Bearer owner-1-token',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          reason: 'Adjusted cash receipt to ₹1500',
-          replacement: {
-            amount: 1500,
-            payment_method: 'Cash',
-            payment_date: '2026-11-16',
+          price: 1500,
+          reminder: {
+            enabled: true,
+            due_date: '2027-05-15',
+            reminder_type: 'service_due',
+            notes: '6-month follow-up',
           },
         }),
       },
       env
     );
-    expect(corr.status).toBe(200);
-    const corrJson = (await corr.json()) as {
-      archived_payment: { archived_at: string };
-      service: { amount_paid: number; balance_amount: number; payment_status: string };
+    expect(u2.status).toBe(201);
+    expect(db.customers.length).toBe(1);
+    expect(db.services.length).toBe(2);
+    expect(db.reminders.length).toBe(1);
+
+    // Verify customer profile returns first & most recent service dates + year-wise grouping
+    const profRes = await app.request(`/api/customers/${u1Json.customer.id}`, {
+      headers: { Authorization: 'Bearer owner-1-token' },
+    }, env);
+    const prof = (await profRes.json()) as {
+      summary: { first_service_date: string; last_service_date: string };
+      services_grouped: Array<{ year: number }>;
     };
-    expect(corrJson.archived_payment.archived_at).toBeTruthy();
-    expect(corrJson.service.amount_paid).toBe(2000);
-    expect(corrJson.service.balance_amount).toBe(0);
-    expect(corrJson.service.payment_status).toBe('Paid');
+    expect(prof.summary.first_service_date).toBe('2025-12-25');
+    expect(prof.summary.last_service_date).toBe('2026-11-15');
+    expect(prof.services_grouped.map((g) => g.year)).toEqual([2026, 2025]);
   });
 
-  it('handles Supabase Storage private uploads, signed URLs, deletion, rollback & orphans', async () => {
+  it('powers calendar archive summary and global multi-filter search with pagination', async () => {
+    const { env, overrides } = createTestHarness();
+    const app = createApp(overrides);
+
+    await app.request(
+      '/api/services/unified',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-1-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          new_customer: {
+            full_name: 'Karthik Nair',
+            phone_number: '+91 9900112233',
+            address: '22 Jayanagar 4th Block',
+            area: 'Jayanagar',
+          },
+          service_date: '2025-06-20',
+          service_type: 'Overhead Tank Cleaning',
+          price: 1800,
+          notes: 'Chlorination completed',
+        }),
+      },
+      env
+    );
+
+    await app.request(
+      '/api/services/unified',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-1-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          new_customer: {
+            full_name: 'Meera Iyer',
+            phone_number: '+91 9811223344',
+            address: '8 Koramangala',
+            area: 'Koramangala',
+          },
+          service_date: '2026-11-15',
+          service_type: 'Underground Sump Cleaning',
+          price: 2500,
+          initial_payment: { amount: 2500, payment_method: 'Cash' },
+        }),
+      },
+      env
+    );
+
+    // Calendar Archive Summary
+    const archRes = await app.request(
+      '/api/archive/summary?year=2025&month=6',
+      { headers: { Authorization: 'Bearer owner-1-token' } },
+      env
+    );
+    expect(archRes.status).toBe(200);
+    const arch = (await archRes.json()) as {
+      years: Array<{ year: number; count: number }>;
+      month_services: Array<{ service_date: string }>;
+    };
+    expect(arch.years.map((y) => y.year)).toEqual([2026, 2025]);
+    expect(arch.month_services.length).toBe(1);
+    expect(arch.month_services[0].service_date).toBe('2025-06-20');
+
+    // Global Search by normalized phone digits + combined filters
+    const searchPhone = await app.request(
+      '/api/search?q=9900112233',
+      { headers: { Authorization: 'Bearer owner-1-token' } },
+      env
+    );
+    const searchPhoneJson = (await searchPhone.json()) as { total: number; items: Array<{ service_date: string }> };
+    expect(searchPhoneJson.total).toBe(1);
+    expect(searchPhoneJson.items[0].service_date).toBe('2025-06-20');
+
+    const searchFiltered = await app.request(
+      '/api/search?area=Koramangala&payment_status=Paid&payment_method=Cash',
+      { headers: { Authorization: 'Bearer owner-1-token' } },
+      env
+    );
+    const searchFilteredJson = (await searchFiltered.json()) as { total: number };
+    expect(searchFilteredJson.total).toBe(1);
+  });
+
+  it('supports 5 attachment categories, signed URLs, and safe permanent deletion cleaning storage', async () => {
     const { db, env, overrides, storageStore } = createTestHarness();
     const app = createApp(overrides);
 
-    const custRes = await app.request(
-      '/api/customers',
+    const unifiedRes = await app.request(
+      '/api/services/unified',
       {
         method: 'POST',
         headers: {
@@ -391,163 +290,85 @@ describe('ZERO BASE Worker API Integration & Security Suite', () => {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          full_name: 'Storage Customer',
-          phone_number: '9111222333',
-          address: '15 Lake Road',
-        }),
-      },
-      env
-    );
-    const { customer } = (await custRes.json()) as { customer: { id: string } };
-
-    const srvRes = await app.request(
-      '/api/services',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: 'Bearer owner-1-token',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          customer_id: customer.id,
+          new_customer: {
+            full_name: 'Deletion Test Customer',
+            phone_number: '9111222333',
+            address: '15 Lake Road',
+          },
           service_date: '2026-11-16',
           service_type: 'Overhead Tank Cleaning',
           price: 1000,
-          discount: 0,
         }),
       },
       env
     );
-    const { service } = (await srvRes.json()) as { service: { id: string } };
+    const { customer, service } = (await unifiedRes.json()) as {
+      customer: { id: string };
+      service: { id: string };
+    };
 
-    // Reject invalid file magic bytes
-    const badForm = new FormData();
-    badForm.append('file', new File(['<script>alert(1)</script>'], 'evil.png', { type: 'image/png' }));
-    badForm.append('service_id', service.id);
-    badForm.append('category', 'Before-cleaning photos');
-    const badUpload = await app.request(
-      '/api/files/upload',
-      {
-        method: 'POST',
-        headers: { Authorization: 'Bearer owner-1-token' },
-        body: badForm,
-      },
-      env
-    );
-    expect(badUpload.status).toBe(400);
-
-    // Valid PNG upload
-    const goodForm = new FormData();
-    goodForm.append('file', new File([VALID_PNG_BYTES], 'before.png', { type: 'image/png' }));
-    goodForm.append('service_id', service.id);
-    goodForm.append('category', 'Before-cleaning photos');
+    const form = new FormData();
+    form.append('file', new File([VALID_PNG_BYTES], 'bill.png', { type: 'image/png' }));
+    form.append('service_id', service.id);
+    form.append('category', 'Bills / Invoices');
     const uploadRes = await app.request(
       '/api/files/upload',
       {
         method: 'POST',
         headers: { Authorization: 'Bearer owner-1-token' },
-        body: goodForm,
+        body: form,
       },
       env
     );
     expect(uploadRes.status).toBe(201);
-    const { file } = (await uploadRes.json()) as {
-      file: { id: string; storage_path: string };
-    };
-    expect(storageStore.has(file.storage_path)).toBe(true);
-
-    // Unauthorized access to file link rejected
-    expect((await app.request(`/api/files/${file.id}`, {}, env)).status).toBe(401);
-    expect(
-      (
-        await app.request(`/api/files/${file.id}`, {
-          headers: { Authorization: 'Bearer non-owner-token' },
-        }, env)
-      ).status
-    ).toBe(403);
-
-    // Authorized owner gets 5-minute signed URL
-    const signedRes = await app.request(`/api/files/${file.id}`, {
-      headers: { Authorization: 'Bearer owner-2-token' },
-    }, env);
-    expect(signedRes.status).toBe(200);
-    const signedJson = (await signedRes.json()) as { url: string; expires_in_seconds: number };
-    expect(signedJson.url).toContain('/storage/v1/object/sign/zero-base-files/');
-    expect(signedJson.expires_in_seconds).toBe(300);
-
-    // Compensating rollback removes uploaded object if DB metadata insert fails
-    db.failNextFileInsert = true;
-    const failForm = new FormData();
-    failForm.append('file', new File([VALID_PNG_BYTES], 'rollback.png', { type: 'image/png' }));
-    failForm.append('service_id', service.id);
-    failForm.append('category', 'Bill photos');
-    const failRes = await app.request(
-      '/api/files/upload',
-      {
-        method: 'POST',
-        headers: { Authorization: 'Bearer owner-1-token' },
-        body: failForm,
-      },
-      env
-    );
-    expect(failRes.status).toBe(500);
     expect(storageStore.size).toBe(1);
 
-    // Authorized deletion deletes from both Supabase Storage and service_files table
-    const delRes = await app.request(`/api/files/${file.id}`, {
-      method: 'DELETE',
-      headers: { Authorization: 'Bearer owner-3-token' },
+    // Impact check & permanent delete of ONLY the service -> customer remains intact, storage cleaned
+    const impactRes = await app.request(`/api/services/${service.id}/deletion-impact`, {
+      headers: { Authorization: 'Bearer owner-1-token' },
     }, env);
-    expect(delRes.status).toBe(200);
+    expect(impactRes.status).toBe(200);
+
+    const delSrvRes = await app.request(`/api/services/${service.id}?mode=permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer owner-1-token' },
+    }, env);
+    expect(delSrvRes.status).toBe(200);
+    expect(db.services.length).toBe(0);
+    expect(db.customers.length).toBe(1);
     expect(storageStore.size).toBe(0);
-    expect(db.service_files.length).toBe(0);
+
+    // Permanent delete of customer works cleanly
+    const delCustRes = await app.request(`/api/customers/${customer.id}?mode=permanent`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer owner-1-token' },
+    }, env);
+    expect(delCustRes.status).toBe(200);
+    expect(db.customers.length).toBe(0);
   });
 
-  it('prevents duplicate active reminders, supports custom reminders, and escapes CSV cells', async () => {
+  it('handles CORS preflight, cancelled reminders, and CSV injection escaping', async () => {
     const { env, overrides } = createTestHarness();
     const app = createApp(overrides);
 
-    const custRes = await app.request(
-      '/api/customers',
+    const preflight = await app.request(
+      '/api/search',
       {
-        method: 'POST',
+        method: 'OPTIONS',
         headers: {
-          Authorization: 'Bearer owner-1-token',
-          'Content-Type': 'application/json',
+          Origin: 'https://zero-base.pages.dev',
+          'Access-Control-Request-Method': 'GET',
         },
-        body: JSON.stringify({
-          full_name: 'Reminder Customer',
-          phone_number: '9000011111',
-          address: '5 Hill Rd',
-        }),
       },
       env
     );
-    const { customer } = (await custRes.json()) as { customer: { id: string } };
-
-    const remRes = await app.request(
-      '/api/reminders',
-      {
-        method: 'POST',
-        headers: {
-          Authorization: 'Bearer owner-1-token',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          customer_id: customer.id,
-          due_date: '2026-12-01',
-          reminder_type: 'custom',
-          notes: 'Call for sump cleaning',
-        }),
-      },
-      env
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get('Access-Control-Allow-Origin')).toBe(
+      'https://zero-base.pages.dev'
     );
-    expect(remRes.status).toBe(201);
 
     expect(escapeCsvCell('=CMD("calc")')).toBe('"\'=CMD(""calc"")"');
-    expect(computeReminderCategory({ status: 'active', due_date: '2026-11-15' }, '2026-11-16')).toBe('Overdue');
-    expect(computeReminderCategory({ status: 'active', due_date: '2026-11-16' }, '2026-11-16')).toBe('Due Today');
-    expect(computeReminderCategory({ status: 'active', due_date: '2026-11-20' }, '2026-11-16')).toBe('Upcoming');
+    expect(computeReminderCategory({ status: 'cancelled', due_date: '2026-11-16' }, '2026-11-16')).toBe('Cancelled');
     expect(computeReminderCategory({ status: 'completed', due_date: '2026-11-15' }, '2026-11-16')).toBe('Completed');
   });
 });

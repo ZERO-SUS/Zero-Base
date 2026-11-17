@@ -21,6 +21,7 @@ export type ReminderDisplayCategory =
   | 'Contacted'
   | 'Confirmed'
   | 'Snoozed'
+  | 'Cancelled'
   | 'Dismissed'
   | 'Completed';
 
@@ -35,8 +36,10 @@ export function computeReminderCategory(
       return 'Confirmed';
     case 'snoozed':
       return 'Snoozed';
+    case 'cancelled':
+      return 'Cancelled';
     case 'dismissed':
-      return 'Dismissed';
+      return 'Cancelled';
     case 'completed':
       return 'Completed';
     case 'active':
@@ -49,7 +52,6 @@ export function computeReminderCategory(
 
 export function escapeCsvCell(value: unknown): string {
   const str = value === null || value === undefined ? '' : String(value);
-  // Neutralize CSV formula injection (=, +, -, @, tab, CR)
   const safe = /^[=+\-@\t\r]/.test(str) ? `'${str}` : str;
   if (/[",\n\r]/.test(safe)) {
     return `"${safe.replace(/"/g, '""')}"`;

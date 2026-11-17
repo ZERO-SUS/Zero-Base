@@ -1,4 +1,13 @@
+export const PRIMARY_FILE_CATEGORIES = [
+  'Bills / Invoices',
+  'UPI Transaction Screenshots',
+  'Before-Service Area Photos',
+  'After-Service Area Photos',
+  'Other Attachments',
+] as const;
+
 export const ALLOWED_FILE_CATEGORIES = [
+  ...PRIMARY_FILE_CATEGORIES,
   'Bill photos',
   'UPI transaction screenshots',
   'Before-cleaning photos',

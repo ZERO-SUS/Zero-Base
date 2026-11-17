@@ -20,7 +20,7 @@ const updateReminderSchema = z.object({
   due_date: z.string().regex(dateRegex).optional(),
   reminder_type: z.enum(['service_due', 'custom', 'follow_up']).optional(),
   status: z
-    .enum(['active', 'contacted', 'confirmed', 'snoozed', 'dismissed', 'completed'])
+    .enum(['active', 'contacted', 'confirmed', 'snoozed', 'dismissed', 'cancelled', 'completed'])
     .optional(),
   snoozed_until: z.string().regex(dateRegex).optional().nullable(),
   notes: z.string().trim().max(1500).optional().nullable(),
@@ -71,7 +71,7 @@ reminderRoutes.get('/reminders', async (c) => {
     ? enriched.filter((r) => r.category.toLowerCase() === categoryFilter.toLowerCase())
     : includeCompleted
       ? enriched
-      : enriched.filter((r) => r.status !== 'completed');
+      : enriched.filter((r) => !['completed', 'cancelled', 'dismissed'].includes(r.status));
 
   const counts = {
     Overdue: enriched.filter((r) => r.category === 'Overdue').length,
@@ -81,7 +81,7 @@ reminderRoutes.get('/reminders', async (c) => {
     Confirmed: enriched.filter((r) => r.category === 'Confirmed').length,
     Snoozed: enriched.filter((r) => r.category === 'Snoozed').length,
     Completed: enriched.filter((r) => r.category === 'Completed').length,
-    Dismissed: enriched.filter((r) => r.category === 'Dismissed').length,
+    Cancelled: enriched.filter((r) => r.category === 'Cancelled').length,
   };
 
   return c.json({
@@ -109,7 +109,6 @@ reminderRoutes.post('/reminders', async (c) => {
 
   const payload = parsed.data;
 
-  // Prevent duplicate active reminders for the same service + due date
   if (payload.service_id) {
     const { data: dup } = await supabase
       .from('reminders')
