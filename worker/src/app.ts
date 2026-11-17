@@ -5,6 +5,7 @@ import { rateLimitMiddleware } from './lib/rateLimit';
 import { authRoutes } from './routes/auth';
 import { customerRoutes } from './routes/customers';
 import { dashboardRoutes } from './routes/dashboard';
+import { draftRoutes } from './routes/drafts';
 import { fileRoutes } from './routes/files';
 import { healthRoutes } from './routes/health';
 import { paymentRoutes } from './routes/payments';
@@ -79,6 +80,7 @@ export function createApp(overrides?: ServiceOverrides): Hono<AppBindings> {
 
   app.route('/api', authRoutes);
   app.route('/api', dashboardRoutes);
+  app.route('/api', draftRoutes);
   app.route('/api', customerRoutes);
   app.route('/api', serviceRoutes);
   app.route('/api', searchRoutes);

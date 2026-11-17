@@ -693,4 +693,294 @@ describe('ZERO BASE Worker API Integration & Security Suite', () => {
     expect(edited.service.balance_amount).toBe(0);
     expect(edited.service.payment_status).toBe('Paid');
   });
+
+  it('supports automatic drafts, immediate draft image uploads with failure/retry/rollback, idempotent checkout, and private file access', async () => {
+    const { db, env, overrides, storageStore } = createTestHarness();
+    const app = createApp(overrides);
+
+    const VALID_JPEG_BYTES = new Uint8Array([
+      0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0xff, 0xd9,
+    ]);
+    const VALID_WEBP_BYTES = new Uint8Array([
+      0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50,
+    ]);
+
+    // 1. Owner 1 saves an active draft automatically
+    const saveDraft1 = await app.request(
+      '/api/drafts/active',
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: 'Bearer owner-1-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          idempotency_key: 'draft-key-1',
+          draft_payload: {
+            customerMode: 'new',
+            newCustomer: {
+              full_name: 'Suresh Verma',
+              phone_number: '9880011223',
+              address: '12 HSR Layout',
+            },
+            cartGroups: [
+              {
+                category_name: 'Overhead Tank Cleaning',
+                kind: 'tank',
+                pricing_mode: 'itemized',
+                items: [{ item_name: 'Tank 1', capacity_litres: '1000', quantity: 1, unit_price: '600' }],
+              },
+            ],
+          },
+        }),
+      },
+      env
+    );
+    expect(saveDraft1.status).toBe(201);
+    const { draft } = (await saveDraft1.json()) as { draft: { id: string } };
+
+    // Owner 2 cannot see or overwrite Owner 1's draft (per-owner isolation)
+    const owner2Get = await app.request(
+      '/api/drafts/active',
+      { headers: { Authorization: 'Bearer owner-2-token' } },
+      env
+    );
+    const owner2Json = (await owner2Get.json()) as { draft: unknown };
+    expect(owner2Json.draft).toBeNull();
+
+    // 2. Upload Before Service mobile JPEG photo + After Service PNG photo into draft
+    const formBefore = new FormData();
+    formBefore.append(
+      'file',
+      new File([VALID_JPEG_BYTES], 'mobile_camera_before.jpg', { type: 'image/jpeg' })
+    );
+    formBefore.append('category', 'Before-Service Area Photos');
+
+    const upBefore = await app.request(
+      `/api/drafts/${draft.id}/files`,
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer owner-1-token' },
+        body: formBefore,
+      },
+      env
+    );
+    expect(upBefore.status).toBe(201);
+    const upBeforeJson = (await upBefore.json()) as {
+      file: { id: string; signed_url: string; category: string };
+    };
+    expect(upBeforeJson.file.signed_url).toContain('signed-ttl-');
+
+    // 3. Reject oversized (>15MB) upload with friendly plain-English message
+    const oversizedBytes = new Uint8Array(15 * 1024 * 1024 + 10);
+    oversizedBytes[0] = 0xff;
+    oversizedBytes[1] = 0xd8;
+    oversizedBytes[2] = 0xff;
+    const formBig = new FormData();
+    formBig.append('file', new File([oversizedBytes], 'huge_camera.jpg', { type: 'image/jpeg' }));
+    formBig.append('category', 'After-Service Area Photos');
+    const upBig = await app.request(
+      `/api/drafts/${draft.id}/files`,
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer owner-1-token' },
+        body: formBig,
+      },
+      env
+    );
+    expect(upBig.status).toBe(400);
+    const upBigJson = (await upBig.json()) as { error: string };
+    expect(upBigJson.error).toContain('15 MB');
+
+    // 4. Simulate failed Storage upload -> retry succeeds
+    db.failNextStorageUpload = true;
+    const formAfter = new FormData();
+    formAfter.append('file', new File([VALID_WEBP_BYTES], 'after_tank.webp', { type: 'image/webp' }));
+    formAfter.append('category', 'After-Service Area Photos');
+    const upFail = await app.request(
+      `/api/drafts/${draft.id}/files`,
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer owner-1-token' },
+        body: formAfter,
+      },
+      env
+    );
+    expect(upFail.status).toBe(502);
+    const upFailJson = (await upFail.json()) as { retryable: boolean; error: string };
+    expect(upFailJson.retryable).toBe(true);
+    expect(upFailJson.error).toBe("Photo couldn't be uploaded. Please try again.");
+
+    // Retry same file -> succeeds!
+    const upRetry = await app.request(
+      `/api/drafts/${draft.id}/files`,
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer owner-1-token' },
+        body: formAfter,
+      },
+      env
+    );
+    expect(upRetry.status).toBe(201);
+
+    // 5. Simulate DB failure after storage upload -> compensating cleanup prevents orphan storage object
+    db.failNextFileInsert = true;
+    const formDbFail = new FormData();
+    formDbFail.append('file', new File([VALID_PNG_BYTES], 'receipt.png', { type: 'image/png' }));
+    formDbFail.append('category', 'Other Attachments');
+    const upDbFail = await app.request(
+      `/api/drafts/${draft.id}/files`,
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer owner-1-token' },
+        body: formDbFail,
+      },
+      env
+    );
+    expect(upDbFail.status).toBe(500);
+    expect(storageStore.size).toBe(2); // Rolled back cleanly; only the 2 successful photos exist!
+
+    // 6. Simulate returning after navigation / refresh: GET /api/drafts/active restores draft + signed previews
+    const restoredRes = await app.request(
+      '/api/drafts/active',
+      { headers: { Authorization: 'Bearer owner-1-token' } },
+      env
+    );
+    expect(restoredRes.status).toBe(200);
+    const restored = (await restoredRes.json()) as {
+      draft: { id: string; draft_payload: { newCustomer: { full_name: string } } };
+      files: Array<{ id: string; signed_url: string }>;
+    };
+    expect(restored.draft.draft_payload.newCustomer.full_name).toBe('Suresh Verma');
+    expect(restored.files).toHaveLength(2);
+    expect(restored.files[0].signed_url).toContain('signed-ttl-');
+
+    // 7. Complete checkout using draft_id -> links draft attachments to service_files + completes draft
+    const checkoutPayload = {
+      new_customer: {
+        full_name: 'Suresh Verma',
+        phone_number: '9880011223',
+        address: '12 HSR Layout',
+      },
+      service_date: '2026-11-17',
+      cart_groups: [
+        {
+          category_name: 'Overhead Tank Cleaning',
+          pricing_mode: 'itemized',
+          category_subtotal: 600,
+          items: [{ item_name: 'Tank 1', capacity_litres: 1000, quantity: 1, unit_price: 600 }],
+        },
+      ],
+      discount_type: 'fixed',
+      discount_value: 0,
+      idempotency_key: 'draft-key-1',
+      draft_id: draft.id,
+      initial_payment: { amount: 600, payment_method: 'UPI', reference_number: 'UPI-DRAFT-1' },
+      reminder: { enabled: false },
+    };
+
+    const checkout1 = await app.request(
+      '/api/services/unified',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-1-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(checkoutPayload),
+      },
+      env
+    );
+    expect(checkout1.status).toBe(201);
+    const c1Json = (await checkout1.json()) as {
+      service: { id: string };
+      linked_files_count: number;
+    };
+    expect(c1Json.linked_files_count).toBe(2);
+
+    // Completed draft is no longer returned on GET /api/drafts/active
+    const afterCompleteDraft = await app.request(
+      '/api/drafts/active',
+      { headers: { Authorization: 'Bearer owner-1-token' } },
+      env
+    );
+    expect(((await afterCompleteDraft.json()) as { draft: unknown }).draft).toBeNull();
+
+    // Repeated checkout click with same draft_id / idempotency_key does NOT create duplicate service
+    const checkoutDup = await app.request(
+      '/api/services/unified',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer owner-1-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(checkoutPayload),
+      },
+      env
+    );
+    expect(checkoutDup.status).toBe(200);
+    expect(((await checkoutDup.json()) as { deduplicated: boolean }).deduplicated).toBe(true);
+    expect(db.services.filter((s) => s.id === c1Json.service.id)).toHaveLength(1);
+
+    // Linked files appear on GET /api/services/:id and private access works via signed URL
+    const srvDetailRes = await app.request(
+      `/api/services/${c1Json.service.id}`,
+      { headers: { Authorization: 'Bearer owner-1-token' } },
+      env
+    );
+    const srvDetail = (await srvDetailRes.json()) as {
+      files: Array<{ id: string }>;
+    };
+    expect(srvDetail.files).toHaveLength(2);
+
+    const privUnauth = await app.request(`/api/files/${srvDetail.files[0].id}`, {}, env);
+    expect(privUnauth.status).toBe(401);
+
+    const privAuth = await app.request(
+      `/api/files/${srvDetail.files[0].id}`,
+      { headers: { Authorization: 'Bearer owner-1-token' } },
+      env
+    );
+    expect(privAuth.status).toBe(200);
+
+    // 8. Discard Draft cleans unlinked storage files cleanly
+    const d2Res = await app.request(
+      '/api/drafts/active',
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: 'Bearer owner-1-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ draft_payload: { notes: 'Discard me' } }),
+      },
+      env
+    );
+    const d2 = (await d2Res.json()) as { draft: { id: string } };
+    const discardUpload = new FormData();
+    discardUpload.append('file', new File([VALID_PNG_BYTES], 'temp.png', { type: 'image/png' }));
+    discardUpload.append('category', 'Before-Service Area Photos');
+    await app.request(
+      `/api/drafts/${d2.draft.id}/files`,
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer owner-1-token' },
+        body: discardUpload,
+      },
+      env
+    );
+    expect(storageStore.size).toBe(3);
+
+    const discardRes = await app.request(
+      `/api/drafts/${d2.draft.id}`,
+      {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer owner-1-token' },
+      },
+      env
+    );
+    expect(discardRes.status).toBe(200);
+    expect(storageStore.size).toBe(2); // Temp draft file cleaned up; saved service photos preserved!
+  });
 });

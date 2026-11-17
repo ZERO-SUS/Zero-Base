@@ -27,14 +27,15 @@ export const ALLOWED_MIME_TYPES = new Set([
 ]);
 
 export function detectMimeFromMagicBytes(bytes: Uint8Array): string | null {
-  if (bytes.length < 12) return null;
+  if (bytes.length < 5) return null;
 
   // JPEG: FF D8 FF
-  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
     return 'image/jpeg';
   }
   // PNG: 89 50 4E 47 0D 0A 1A 0A
   if (
+    bytes.length >= 8 &&
     bytes[0] === 0x89 &&
     bytes[1] === 0x50 &&
     bytes[2] === 0x4e &&
@@ -48,6 +49,7 @@ export function detectMimeFromMagicBytes(bytes: Uint8Array): string | null {
   }
   // GIF: GIF87a or GIF89a
   if (
+    bytes.length >= 6 &&
     bytes[0] === 0x47 &&
     bytes[1] === 0x49 &&
     bytes[2] === 0x46 &&
@@ -59,6 +61,7 @@ export function detectMimeFromMagicBytes(bytes: Uint8Array): string | null {
   }
   // WebP: RIFF....WEBP
   if (
+    bytes.length >= 12 &&
     bytes[0] === 0x52 &&
     bytes[1] === 0x49 &&
     bytes[2] === 0x46 &&
@@ -72,6 +75,7 @@ export function detectMimeFromMagicBytes(bytes: Uint8Array): string | null {
   }
   // PDF: %PDF-
   if (
+    bytes.length >= 5 &&
     bytes[0] === 0x25 &&
     bytes[1] === 0x50 &&
     bytes[2] === 0x44 &&
@@ -82,6 +86,15 @@ export function detectMimeFromMagicBytes(bytes: Uint8Array): string | null {
   }
 
   return null;
+}
+
+export function buildDraftStoragePath(params: {
+  draftId: string;
+  fileId: string;
+  filename: string;
+}): string {
+  const safe = sanitizeFilename(params.filename);
+  return `drafts/${params.draftId}/${params.fileId}-${safe}`;
 }
 
 export function sanitizeFilename(filename: string): string {

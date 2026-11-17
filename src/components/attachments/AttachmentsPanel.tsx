@@ -1,17 +1,21 @@
-import React, { useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import {
+  Camera,
+  CheckCircle2,
   Download,
   ExternalLink,
   FileText,
   Image as ImageIcon,
+  Loader2,
+  Plus,
   RefreshCw,
   Trash2,
-  Upload,
+  XCircle,
 } from 'lucide-react';
 import { apiFetch, ApiError } from '../../lib/api';
 import { formatBytes, formatDateTimeIst } from '../../lib/format';
+import { validateAndPrepareUploadFile } from '../../lib/imageUtils';
 import {
-  FILE_CATEGORIES,
   type FileCategory,
   type ServiceFileRecord,
 } from '../../types/domain';
@@ -19,12 +23,44 @@ import { Badge } from '../ui/Badge';
 import { ConfirmDialog } from '../ui/ConfirmDialog';
 import { Modal } from '../ui/Modal';
 
-interface FailedUpload {
+interface ActiveUploadItem {
   id: string;
   file: File;
   category: FileCategory;
-  error: string;
+  previewUrl: string | null;
+  status: 'uploading' | 'uploaded' | 'failed';
+  error?: string;
 }
+
+const SIMPLE_SECTIONS: Array<{
+  title: string;
+  category: FileCategory;
+  buttonLabel: string;
+  accept: string;
+  isImageSection: boolean;
+}> = [
+  {
+    title: 'BEFORE SERVICE',
+    category: 'Before-Service Area Photos',
+    buttonLabel: 'Add Photo',
+    accept: 'image/jpeg,image/png,image/webp,image/gif,image/*',
+    isImageSection: true,
+  },
+  {
+    title: 'AFTER SERVICE',
+    category: 'After-Service Area Photos',
+    buttonLabel: 'Add Photo',
+    accept: 'image/jpeg,image/png,image/webp,image/gif,image/*',
+    isImageSection: true,
+  },
+  {
+    title: 'OTHER DOCUMENTS',
+    category: 'Other Attachments',
+    buttonLabel: 'Add File',
+    accept: 'image/jpeg,image/png,image/webp,image/gif,application/pdf,.pdf,image/*',
+    isImageSection: false,
+  },
+];
 
 interface AttachmentsPanelProps {
   serviceId: string;
@@ -37,11 +73,9 @@ export function AttachmentsPanel({
   files,
   onChanged,
 }: AttachmentsPanelProps) {
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [category, setCategory] = useState<FileCategory>('Before-Service Area Photos');
-  const [uploading, setUploading] = useState(false);
-  const [dragOver, setDragOver] = useState(false);
-  const [failedUploads, setFailedUploads] = useState<FailedUpload[]>([]);
+  const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const cameraRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const [queueItems, setQueueItems] = useState<ActiveUploadItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [previewItem, setPreviewItem] = useState<{
     record: ServiceFileRecord;
@@ -51,53 +85,72 @@ export function AttachmentsPanel({
   const [deleteTarget, setDeleteTarget] = useState<ServiceFileRecord | null>(null);
   const [loadingId, setLoadingId] = useState<string | null>(null);
 
-  const uploadSingleFile = async (file: File, cat: FileCategory, retryId?: string) => {
+  const uploadSingleItem = async (item: ActiveUploadItem) => {
+    setQueueItems((prev) =>
+      prev.map((q) => (q.id === item.id ? { ...q, status: 'uploading', error: undefined } : q))
+    );
+
     const form = new FormData();
-    form.append('file', file);
+    form.append('file', item.file);
     form.append('service_id', serviceId);
-    form.append('category', cat);
+    form.append('category', item.category);
 
     try {
       await apiFetch<{ file: ServiceFileRecord }>('/api/files/upload', {
         method: 'POST',
         body: form,
       });
-      if (retryId) {
-        setFailedUploads((prev) => prev.filter((item) => item.id !== retryId));
-      }
+      setQueueItems((prev) =>
+        prev.map((q) => (q.id === item.id ? { ...q, status: 'uploaded', error: undefined } : q))
+      );
       onChanged();
     } catch (err) {
-      const message = err instanceof ApiError ? err.message : 'Upload failed due to network error';
-      if (retryId) {
-        setFailedUploads((prev) =>
-          prev.map((item) => (item.id === retryId ? { ...item, error: message } : item))
-        );
-      } else {
-        setFailedUploads((prev) => [
-          ...prev,
-          { id: crypto.randomUUID(), file, category: cat, error: message },
-        ]);
-      }
-      setError(message);
+      const message =
+        err instanceof ApiError
+          ? err.message
+          : "Photo couldn't be uploaded. Please try again.";
+      setQueueItems((prev) =>
+        prev.map((q) => (q.id === item.id ? { ...q, status: 'failed', error: message } : q))
+      );
     }
   };
 
-  const processFiles = async (selected: File[]) => {
+  const processFiles = async (selected: File[], cat: FileCategory) => {
     if (selected.length === 0) return;
     setError(null);
-    setUploading(true);
-    for (const file of selected) {
-      await uploadSingleFile(file, category);
+
+    const preparedItems: ActiveUploadItem[] = [];
+    for (const rawFile of selected) {
+      const prep = await validateAndPrepareUploadFile(rawFile);
+      if (!prep.ok) {
+        setError(prep.error);
+        continue;
+      }
+      const isImg = prep.mime.startsWith('image/');
+      preparedItems.push({
+        id: crypto.randomUUID(),
+        file: prep.file,
+        category: cat,
+        previewUrl: isImg ? URL.createObjectURL(prep.file) : null,
+        status: 'uploading',
+      });
     }
-    setUploading(false);
+
+    if (preparedItems.length === 0) return;
+    setQueueItems((prev) => [...prev, ...preparedItems]);
+
+    // Upload sequentially/independently so one failure never stops the rest
+    for (const item of preparedItems) {
+      await uploadSingleItem(item);
+    }
   };
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selected = Array.from(e.target.files ?? []);
-    await processFiles(selected);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
+  const removeQueueItem = (id: string) => {
+    setQueueItems((prev) => {
+      const target = prev.find((q) => q.id === id);
+      if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl);
+      return prev.filter((q) => q.id !== id);
+    });
   };
 
   const openFile = async (record: ServiceFileRecord, mode: 'preview' | 'download') => {
@@ -138,97 +191,157 @@ export function AttachmentsPanel({
   };
 
   return (
-    <div
-      onDragOver={(e) => {
-        e.preventDefault();
-        setDragOver(true);
-      }}
-      onDragLeave={() => setDragOver(false)}
-      onDrop={(e) => {
-        e.preventDefault();
-        setDragOver(false);
-        void processFiles(Array.from(e.dataTransfer.files));
-      }}
-      className={`zb-card p-5 space-y-4 transition ${dragOver ? 'border-accent bg-accent-soft/30' : ''}`}
-    >
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-semibold text-text-primary">
-            Service Attachments &amp; Photos (Private Supabase Storage)
-          </h3>
-          <p className="text-xs text-text-secondary">
-            Drag &amp; drop files here or click Upload • Stored privately in <code>zero-base-files</code>
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={category}
-            onChange={(e) => setCategory(e.target.value as FileCategory)}
-            aria-label="Upload category"
-            className="rounded-lg border px-3 py-1.5 text-xs"
-          >
-            {FILE_CATEGORIES.map((cat) => (
-              <option key={cat} value={cat}>
-                {cat}
-              </option>
-            ))}
-          </select>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            accept="image/jpeg,image/png,image/webp,application/pdf"
-            onChange={handleFileChange}
-            className="hidden"
-          />
-          <button
-            type="button"
-            disabled={uploading}
-            onClick={() => fileInputRef.current?.click()}
-            className="zb-btn-primary inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium disabled:opacity-50"
-          >
-            <Upload className="h-3.5 w-3.5" />
-            {uploading ? 'Uploading...' : 'Upload Files'}
-          </button>
-        </div>
+    <div className="zb-card p-5 space-y-4">
+      <div>
+        <h3 className="text-base font-semibold text-text-primary">Photos &amp; Documents</h3>
+        <p className="text-xs text-text-secondary">
+          Add Before Service photos, After Service photos, or bills &amp; receipts (max 15 MB per file).
+        </p>
       </div>
 
       {error && (
-        <div className="rounded-lg border border-error/30 bg-error-soft px-3.5 py-2 text-xs text-error">
+        <div className="rounded-lg border border-error/30 bg-error-soft px-3.5 py-2.5 text-xs text-error">
           {error}
         </div>
       )}
 
-      {failedUploads.length > 0 && (
-        <div className="space-y-2 rounded-lg border border-warning/30 bg-warning-soft p-3">
-          <p className="text-xs font-semibold text-warning">
-            Failed Uploads — Retry Available
-          </p>
-          {failedUploads.map((item) => (
+      {/* Simple 3-section upload buttons */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {SIMPLE_SECTIONS.map((sec) => {
+          const sectionQueue = queueItems.filter((q) => q.category === sec.category);
+          return (
             <div
-              key={item.id}
-              className="flex items-center justify-between gap-2 rounded-md bg-surface px-3 py-2 text-xs"
+              key={sec.category}
+              className="rounded-xl border border-border bg-bg p-3.5 space-y-2.5"
             >
-              <div className="min-w-0">
-                <p className="truncate font-medium text-text-primary">{item.file.name}</p>
-                <p className="text-error">{item.error}</p>
+              <p className="text-xs font-bold uppercase tracking-wider text-text-primary">
+                {sec.title}
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => inputRefs.current[sec.category]?.click()}
+                  className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-xs font-semibold text-text-primary hover:bg-elevated"
+                >
+                  <Plus className="h-3.5 w-3.5 text-accent" />
+                  {sec.buttonLabel}
+                </button>
+                {sec.isImageSection && (
+                  <button
+                    type="button"
+                    onClick={() => cameraRefs.current[sec.category]?.click()}
+                    className="inline-flex items-center justify-center gap-1 rounded-lg border border-border bg-surface px-3 py-2 text-xs font-medium text-text-secondary hover:text-text-primary sm:hidden"
+                    aria-label={`Take camera photo for ${sec.title}`}
+                  >
+                    <Camera className="h-3.5 w-3.5" />
+                    Camera
+                  </button>
+                )}
               </div>
-              <button
-                type="button"
-                onClick={() => void uploadSingleFile(item.file, item.category, item.id)}
-                className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs font-medium hover:bg-bg"
-              >
-                <RefreshCw className="h-3 w-3" />
-                Retry
-              </button>
+
+              <input
+                ref={(el) => {
+                  inputRefs.current[sec.category] = el;
+                }}
+                type="file"
+                multiple
+                accept={sec.accept}
+                className="hidden"
+                onChange={(e) => {
+                  const list = Array.from(e.target.files ?? []);
+                  void processFiles(list, sec.category);
+                  e.target.value = '';
+                }}
+              />
+              {sec.isImageSection && (
+                <input
+                  ref={(el) => {
+                    cameraRefs.current[sec.category] = el;
+                  }}
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  className="hidden"
+                  onChange={(e) => {
+                    const list = Array.from(e.target.files ?? []);
+                    void processFiles(list, sec.category);
+                    e.target.value = '';
+                  }}
+                />
+              )}
+
+              {sectionQueue.length > 0 && (
+                <div className="space-y-2 pt-1">
+                  {sectionQueue.map((item) => (
+                    <div
+                      key={item.id}
+                      className="flex items-center justify-between gap-2 rounded-lg border border-border bg-surface p-2 text-xs"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        {item.previewUrl ? (
+                          <img
+                            src={item.previewUrl}
+                            alt={item.file.name}
+                            className="h-10 w-10 rounded object-cover shrink-0"
+                          />
+                        ) : (
+                          <FileText className="h-7 w-7 text-text-muted shrink-0" />
+                        )}
+                        <div className="min-w-0">
+                          <p className="truncate font-medium text-text-primary">{item.file.name}</p>
+                          {item.status === 'uploading' && (
+                            <span className="inline-flex items-center gap-1 text-[11px] text-accent">
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                              Uploading...
+                            </span>
+                          )}
+                          {item.status === 'uploaded' && (
+                            <span className="inline-flex items-center gap-1 text-[11px] text-success">
+                              <CheckCircle2 className="h-3 w-3" />
+                              Uploaded
+                            </span>
+                          )}
+                          {item.status === 'failed' && (
+                            <span className="inline-flex items-center gap-1 text-[11px] text-error">
+                              <XCircle className="h-3 w-3" />
+                              {item.error || 'Failed'}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1 shrink-0">
+                        {item.status === 'failed' && (
+                          <button
+                            type="button"
+                            onClick={() => void uploadSingleItem(item)}
+                            className="inline-flex items-center gap-1 rounded border border-border px-2 py-1 text-[11px] font-medium hover:bg-bg"
+                          >
+                            <RefreshCw className="h-3 w-3" />
+                            Retry
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => removeQueueItem(item.id)}
+                          className="p-1 text-text-muted hover:text-error"
+                          aria-label="Remove"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-          ))}
-        </div>
-      )}
+          );
+        })}
+      </div>
 
       {files.length === 0 ? (
         <div className="rounded-lg border border-dashed border-border py-8 text-center text-xs text-text-muted">
-          No photos or bills uploaded yet for this service. Drag files here to upload.
+          No photos or documents saved for this service yet.
         </div>
       ) : (
         <div className="divide-y divide-border rounded-lg border border-border">

@@ -106,7 +106,7 @@ fileRoutes.post('/files/upload', async (c) => {
   if (file.size <= 0 || file.size > maxBytes) {
     return c.json(
       {
-        error: `File size must be between 1 byte and ${Math.round(maxBytes / (1024 * 1024))} MB`,
+        error: `This file is larger than ${Math.round(maxBytes / (1024 * 1024))} MB. Please choose a smaller photo or file.`,
       },
       400
     );
@@ -119,7 +119,7 @@ fileRoutes.post('/files/upload', async (c) => {
   if (!detectedMime || !ALLOWED_MIME_TYPES.has(detectedMime)) {
     return c.json(
       {
-        error: 'Unsupported or invalid file content. Allowed formats: JPEG, PNG, WebP, GIF, PDF.',
+        error: 'This file type is not supported. Please choose a JPG, PNG, WEBP photo or PDF document.',
       },
       400
     );
@@ -142,9 +142,10 @@ fileRoutes.post('/files/upload', async (c) => {
     });
 
   if (uploadErr) {
+    console.error(`[${c.get('requestId')}] Storage upload failed for ${storagePath}:`, uploadErr.message);
     return c.json(
       {
-        error: 'Failed to store file in private Supabase Storage. Please retry.',
+        error: "Photo couldn't be uploaded. Please try again.",
         retryable: true,
       },
       502
@@ -170,11 +171,12 @@ fileRoutes.post('/files/upload', async (c) => {
     .single();
 
   if (dbErr || !record) {
+    console.error(`[${c.get('requestId')}] DB service_files insert failed for ${storagePath}:`, dbErr?.message);
     // Compensating rollback in Supabase Storage so orphaned objects aren't left behind
     const { error: rmErr } = await supabase.storage.from(bucket).remove([storagePath]);
     return c.json(
       {
-        error: 'File uploaded to storage, but database metadata failed to save. Please retry.',
+        error: "Photo couldn't be saved to this service. Please try again.",
         retryable: true,
         orphaned_storage_path: rmErr ? storagePath : null,
       },
@@ -182,7 +184,11 @@ fileRoutes.post('/files/upload', async (c) => {
     );
   }
 
-  return c.json({ file: record }, 201);
+  const { data: viewLink } = await supabase.storage
+    .from(bucket)
+    .createSignedUrl(storagePath, 3600);
+
+  return c.json({ file: { ...record, signed_url: viewLink?.signedUrl ?? null } }, 201);
 });
 
 // GET /api/files/orphans — Compare Supabase Storage `zero-base-files` vs `service_files`
@@ -190,20 +196,29 @@ fileRoutes.get('/files/orphans', requireAdmin, async (c) => {
   const supabase = c.get('supabase');
   const bucket = getBucketName(c.env);
 
-  const { data: dbFiles, error } = await supabase
-    .from('service_files')
-    .select('id, storage_path, file_name, service_id, archived_at');
+  const [dbRes, draftFilesRes, customerObjects, draftObjects] = await Promise.all([
+    supabase
+      .from('service_files')
+      .select('id, storage_path, file_name, service_id, archived_at'),
+    supabase.from('service_draft_files').select('storage_path'),
+    listStoragePathsRecursive(supabase, bucket, 'customers'),
+    listStoragePathsRecursive(supabase, bucket, 'drafts'),
+  ]);
 
-  if (error) {
+  if (dbRes.error) {
     return c.json({ error: 'Failed to fetch service_files metadata' }, 500);
   }
 
-  const dbPaths = new Set((dbFiles ?? []).map((f) => f.storage_path));
-  const storageObjects = await listStoragePathsRecursive(supabase, bucket, 'customers');
+  const dbFiles = dbRes.data ?? [];
+  const dbPaths = new Set(dbFiles.map((f) => f.storage_path));
+  const draftPaths = new Set((draftFilesRes.data ?? []).map((f) => f.storage_path));
+  const storageObjects = [...customerObjects, ...draftObjects];
   const storagePaths = new Set(storageObjects.map((o) => o.path));
 
-  const storageOnlyOrphans = storageObjects.filter((o) => !dbPaths.has(o.path));
-  const missingInStorage = (dbFiles ?? []).filter((f) => !storagePaths.has(f.storage_path));
+  const storageOnlyOrphans = storageObjects.filter(
+    (o) => !dbPaths.has(o.path) && !draftPaths.has(o.path)
+  );
+  const missingInStorage = dbFiles.filter((f) => !storagePaths.has(f.storage_path));
 
   return c.json({
     total_db_files: (dbFiles ?? []).length,
@@ -231,13 +246,18 @@ fileRoutes.delete('/files/orphans', requireAdmin, async (c) => {
     return c.json({ error: 'Provide storage paths to clean up' }, 400);
   }
 
-  const { data: tracked } = await supabase
-    .from('service_files')
-    .select('storage_path')
-    .in('storage_path', paths);
+  const [{ data: tracked }, { data: trackedDrafts }] = await Promise.all([
+    supabase.from('service_files').select('storage_path').in('storage_path', paths),
+    supabase.from('service_draft_files').select('storage_path').in('storage_path', paths),
+  ]);
 
-  const trackedSet = new Set((tracked ?? []).map((t) => t.storage_path));
-  const safeToDelete = paths.filter((p) => p.startsWith('customers/') && !trackedSet.has(p));
+  const trackedSet = new Set([
+    ...(tracked ?? []).map((t) => t.storage_path),
+    ...(trackedDrafts ?? []).map((t) => t.storage_path),
+  ]);
+  const safeToDelete = paths.filter(
+    (p) => (p.startsWith('customers/') || p.startsWith('drafts/')) && !trackedSet.has(p)
+  );
 
   if (safeToDelete.length > 0) {
     const { error: rmErr } = await supabase.storage.from(bucket).remove(safeToDelete);

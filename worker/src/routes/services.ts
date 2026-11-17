@@ -73,6 +73,7 @@ const unifiedCreateSchema = z
     description: z.string().trim().max(1000).optional().nullable(),
     notes: z.string().trim().max(3000).optional().nullable(),
     idempotency_key: z.string().trim().max(120).optional().nullable(),
+    draft_id: z.string().regex(uuidRegex).optional().nullable(),
     initial_payment: z
       .object({
         amount: z.number().positive(),
@@ -153,20 +154,60 @@ async function getActiveCategorySet(
 // Unified Add Service / Checkout endpoint (supports Itemized Cart + Backward-compatible single service)
 serviceRoutes.post('/services/unified', async (c) => {
   const supabase = c.get('supabase');
+  const user = c.get('authUser');
 
   let body: unknown;
   try {
     body = await c.req.json();
   } catch {
-    return c.json({ error: 'Invalid JSON request body' }, 400);
+    return c.json({ error: 'Some information could not be read. Please try again.' }, 400);
   }
 
   const parsed = unifiedCreateSchema.safeParse(body);
   if (!parsed.success) {
-    return c.json({ error: 'Validation failed', details: parsed.error.flatten() }, 400);
+    return c.json(
+      {
+        error: 'Some information is missing. Please check the highlighted fields.',
+        details: parsed.error.flatten(),
+      },
+      400
+    );
   }
 
   const p = parsed.data;
+
+  // Idempotent guard against duplicate checkouts from the same draft
+  if (p.draft_id) {
+    const { data: existingDraft } = await supabase
+      .from('service_drafts')
+      .select('id, status, completed_service_id')
+      .eq('id', p.draft_id)
+      .eq('owner_id', user.id)
+      .maybeSingle();
+
+    if (existingDraft?.status === 'completed' && existingDraft.completed_service_id) {
+      const { data: existingService } = await supabase
+        .from('services')
+        .select('*')
+        .eq('id', existingDraft.completed_service_id)
+        .single();
+      if (existingService) {
+        const { data: existingCustomer } = await supabase
+          .from('customers')
+          .select('*')
+          .eq('id', existingService.customer_id)
+          .single();
+        return c.json(
+          {
+            customer: existingCustomer,
+            service: existingService,
+            deduplicated: true,
+          },
+          200
+        );
+      }
+    }
+  }
 
   const rawGroups: CartCategoryGroupInput[] =
     p.cart_groups && p.cart_groups.length > 0
@@ -268,7 +309,21 @@ serviceRoutes.post('/services/unified', async (c) => {
     service: Record<string, unknown>;
     reminder?: Record<string, unknown> | null;
     deduplicated?: boolean;
+    linked_files_count?: number;
   };
+
+  if (p.draft_id && res.service?.id && res.customer?.id) {
+    const { data: linkRes, error: linkErr } = await supabase.rpc('complete_draft_attachments', {
+      p_draft_id: p.draft_id,
+      p_service_id: res.service.id,
+      p_customer_id: res.customer.id,
+    });
+    if (linkErr) {
+      console.error(`[${c.get('requestId')}] complete_draft_attachments failed:`, linkErr.message);
+    } else if (linkRes && typeof linkRes === 'object') {
+      res.linked_files_count = Number((linkRes as { linked_count?: unknown }).linked_count ?? 0);
+    }
+  }
 
   return c.json(res, res.deduplicated ? 200 : 201);
 });

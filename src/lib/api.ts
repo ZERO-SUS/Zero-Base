@@ -20,35 +20,62 @@ export class ApiError extends Error {
   }
 }
 
-async function getAccessToken(): Promise<string> {
-  const { data } = await supabase.auth.getSession();
-  const token = data.session?.access_token;
-  if (!token) {
-    throw new ApiError('Session expired. Please log in again.', 401);
+async function getAccessToken(forceRefresh = false): Promise<string> {
+  if (forceRefresh) {
+    const { data, error } = await supabase.auth.refreshSession();
+    const refreshed = data.session?.access_token;
+    if (!error && refreshed) return refreshed;
+    throw new ApiError('Your session ended. Please sign in again.', 401);
   }
-  return token;
+
+  const { data } = await supabase.auth.getSession();
+  const session = data.session;
+  if (!session?.access_token) {
+    throw new ApiError('Your session ended. Please sign in again.', 401);
+  }
+
+  // Proactively refresh if token expires within the next 60 seconds
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (session.expires_at && session.expires_at - nowSec < 60) {
+    const { data: refreshedData } = await supabase.auth.refreshSession();
+    if (refreshedData.session?.access_token) {
+      return refreshedData.session.access_token;
+    }
+  }
+
+  return session.access_token;
 }
 
 export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const token = await getAccessToken();
-  const headers = new Headers(init.headers ?? {});
-  headers.set('Authorization', `Bearer ${token}`);
-  if (!(init.body instanceof FormData) && !headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json');
-  }
-
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE}${path}`, {
+  const execute = async (forceRefresh: boolean) => {
+    const token = await getAccessToken(forceRefresh);
+    const headers = new Headers(init.headers ?? {});
+    headers.set('Authorization', `Bearer ${token}`);
+    if (!(init.body instanceof FormData) && !headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
+    }
+    return fetch(`${API_BASE}${path}`, {
       ...init,
       headers,
     });
-  } catch {
-    throw new ApiError('Network error while contacting ZERO BASE API. Please check your connection and retry.', 0);
+  };
+
+  let response: Response;
+  try {
+    response = await execute(false);
+    if (response.status === 401) {
+      response = await execute(true);
+    }
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    throw new ApiError(
+      'Unable to reach ZERO BASE right now. Please check your internet connection and try again.',
+      0
+    );
   }
 
   if (response.status === 401) {
-    throw new ApiError('Your session is invalid or expired. Please sign in again.', 401);
+    throw new ApiError('Your session ended. Please sign in again.', 401);
   }
 
   const contentType = response.headers.get('Content-Type') ?? '';
@@ -57,7 +84,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   if (!response.ok) {
     const errObj = typeof data === 'object' && data !== null ? (data as Record<string, unknown>) : {};
     throw new ApiError(
-      String(errObj.error ?? `Request failed (${response.status})`),
+      String(errObj.error ?? `Something went wrong (${response.status}). Please try again.`),
       response.status,
       typeof errObj.code === 'string' ? errObj.code : undefined,
       errObj
@@ -65,6 +92,29 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   }
 
   return data as T;
+}
+
+/**
+ * Best-effort background save used when closing/refreshing the page or switching tabs.
+ * Never throws; reads cached token synchronously if possible or uses getSession.
+ */
+export function apiFlushKeepalive(path: string, method: 'PUT' | 'POST', bodyObj: unknown): void {
+  void (async () => {
+    try {
+      const token = await getAccessToken(false);
+      await fetch(`${API_BASE}${path}`, {
+        method,
+        keepalive: true,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(bodyObj),
+      });
+    } catch {
+      // Non-blocking best-effort background flush
+    }
+  })();
 }
 
 export async function apiDownloadBlob(path: string): Promise<Blob> {

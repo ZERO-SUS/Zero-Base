@@ -18,10 +18,13 @@ export interface InMemoryDb {
   service_items: Array<Record<string, unknown>>;
   payments: Array<Record<string, unknown>>;
   service_files: Array<Record<string, unknown>>;
+  service_drafts: Array<Record<string, unknown>>;
+  service_draft_files: Array<Record<string, unknown>>;
   reminders: Array<Record<string, unknown>>;
   audit_logs: Array<Record<string, unknown>>;
   business_settings: Array<Record<string, unknown>>;
   failNextFileInsert: boolean;
+  failNextStorageUpload: boolean;
   customerSeq: number;
 }
 
@@ -64,6 +67,8 @@ export function createInitialDb(): InMemoryDb {
     service_items: [],
     payments: [],
     service_files: [],
+    service_drafts: [],
+    service_draft_files: [],
     reminders: [],
     audit_logs: [],
     business_settings: [
@@ -90,6 +95,7 @@ export function createInitialDb(): InMemoryDb {
       },
     ],
     failNextFileInsert: false,
+    failNextStorageUpload: false,
     customerSeq: 1,
   };
 }
@@ -131,7 +137,7 @@ function recalcServiceFinancials(db: InMemoryDb, serviceId: string) {
   }
 }
 
-export function createMockSupabaseStorage() {
+export function createMockSupabaseStorage(db?: InMemoryDb) {
   const store = new Map<string, { data: Uint8Array; contentType: string; updatedAt: string }>();
 
   return {
@@ -142,6 +148,10 @@ export function createMockSupabaseStorage() {
       }
       return {
         async upload(path: string, body: Uint8Array, opts?: { contentType?: string }) {
+          if (db?.failNextStorageUpload) {
+            db.failNextStorageUpload = false;
+            return { data: null, error: { message: 'Simulated storage upload failure' } };
+          }
           store.set(path, {
             data: new Uint8Array(body),
             contentType: opts?.contentType ?? 'application/octet-stream',
@@ -337,7 +347,10 @@ class MockQueryBuilder {
     const rows = this.db[this.table] as Array<Record<string, unknown>>;
 
     if (this.op === 'insert' && this.payload) {
-      if (this.table === 'service_files' && this.db.failNextFileInsert) {
+      if (
+        (this.table === 'service_files' || this.table === 'service_draft_files') &&
+        this.db.failNextFileInsert
+      ) {
         this.db.failNextFileInsert = false;
         return { data: null, error: { message: 'Simulated DB insert failure' } };
       }
@@ -362,6 +375,8 @@ class MockQueryBuilder {
         }
         if (this.table === 'payments' && !rec.id) rec.id = crypto.randomUUID();
         if (this.table === 'service_files' && !rec.id) rec.id = crypto.randomUUID();
+        if (this.table === 'service_drafts' && !rec.id) rec.id = crypto.randomUUID();
+        if (this.table === 'service_draft_files' && !rec.id) rec.id = crypto.randomUUID();
         if (this.table === 'reminders' && !rec.id) rec.id = crypto.randomUUID();
         if (this.table === 'audit_logs' && !rec.audit_id) rec.audit_id = crypto.randomUUID();
 
@@ -457,7 +472,7 @@ class MockQueryBuilder {
 
 export function createTestHarness() {
   const db = createInitialDb();
-  const storage = createMockSupabaseStorage();
+  const storage = createMockSupabaseStorage(db);
 
   const env: Env = {
     SUPABASE_URL: 'https://fskcdtpdkjgjaksqwjaf.supabase.co',
@@ -973,6 +988,44 @@ export function createTestHarness() {
               .reduce((a, p) => a + Number(p.amount), 0),
             service_type_breakdown: [],
           },
+          error: null,
+        };
+      }
+
+      if (name === 'complete_draft_attachments') {
+        const p = params ?? {};
+        const draftId = String(p.p_draft_id ?? '');
+        const serviceId = String(p.p_service_id ?? '');
+        const customerId = String(p.p_customer_id ?? '');
+        const draft = db.service_drafts.find((d) => d.id === draftId);
+        if (!draft) {
+          return { data: { draft_found: false, linked_count: 0 }, error: null };
+        }
+        const uploadedDraftFiles = db.service_draft_files.filter(
+          (df) => df.draft_id === draftId && df.upload_status === 'uploaded'
+        );
+        for (const df of uploadedDraftFiles) {
+          db.service_files.push({
+            id: df.id,
+            customer_id: customerId,
+            service_id: serviceId,
+            payment_id: null,
+            file_name: df.file_name,
+            storage_path: df.storage_path,
+            mime_type: df.mime_type,
+            file_size: df.file_size,
+            category: df.category,
+            uploaded_by: df.owner_id,
+            uploaded_at: new Date().toISOString(),
+            archived_at: null,
+          });
+        }
+        db.service_draft_files = db.service_draft_files.filter((df) => df.draft_id !== draftId);
+        draft.status = 'completed';
+        draft.completed_service_id = serviceId;
+        draft.updated_at = new Date().toISOString();
+        return {
+          data: { draft_found: true, linked_count: uploadedDraftFiles.length },
           error: null,
         };
       }
